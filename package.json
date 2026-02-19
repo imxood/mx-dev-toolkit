@@ -62,11 +62,9 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src --ext ts",
-    "test": "vscode-test"
+    "compile": "tsc -p ./ --noEmit && esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap",
+    "watch": "esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap --watch",
+    "lint": "eslint src --ext ts"
   },
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {
@@ -74,16 +72,15 @@
     "@types/node": "18.x",
     "@types/vscode": "^1.79.0",
     "@types/xml2js": "^0.4.14",
-    "@typescript-eslint/eslint-plugin": "^7.7.1",
-    "@typescript-eslint/parser": "^7.7.1",
-    "@vscode/test-cli": "^0.0.9",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.3.9",
-    "eslint": "^8.57.0",
-    "typescript": "^5.4.5"
-  },
-  "dependencies": {
+    "dayjs": "^1.11.11",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.2",
     "json5": "^2.2.3",
-    "xml2js": "^0.6.2",
-    "dayjs": "^1.11.11"
+    "typescript": "^5.4.5",
+    "xml2js": "^0.6.2"
   }
 }

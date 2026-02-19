@@ -4,8 +4,9 @@ docs/**
 AGENTS.md
 .gitignore
 pnpm-lock.yaml
+pnpm-workspace.yaml
 .vscodeignore
 **/tsconfig.json
-**/.eslintrc.json
+eslint.config.cjs
 **/*.map
 **/*.ts
