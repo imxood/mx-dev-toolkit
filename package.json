@@ -1,0 +1,91 @@
+{
+  "name": "mx-dev-toolkit",
+  "displayName": "Mx Dev Toolkit",
+  "description": "Mx personal developer toolkit for daily VSCode workflows",
+  "version": "0.2.3",
+  "publisher": "maxu",
+  "repository": "https://github.com/imxood/mx-dev-toolkit",
+  "engines": {
+    "vscode": "^1.79.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:mx_dev.json",
+    "onCommand:mx-dev-toolkit.keil.generateConfig"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": [
+      {
+        "title": "Mx Dev Toolkit",
+        "properties": {
+          "mx-dev-toolkit.Uv4Path": {
+            "type": "string",
+            "scope": "machine",
+            "markdownDescription": "MDK UV4.exe path",
+            "default": "C:/Keil_v5/UV4/UV4.exe"
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "mx-dev-toolkit.keil.build",
+        "title": "mx keil build"
+      },
+      {
+        "command": "mx-dev-toolkit.keil.rebuild",
+        "title": "mx keil rebuild"
+      },
+      {
+        "command": "mx-dev-toolkit.keil.clean",
+        "title": "mx keil clean"
+      },
+      {
+        "command": "mx-dev-toolkit.keil.generateConfig",
+        "title": "mx keil gen config"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "mx-dev-toolkit.selection.copyRelativeRange",
+        "key": "ctrl+alt+c",
+        "when": "editorTextFocus && !editorReadonly"
+      },
+      {
+        "command": "mx-dev-toolkit.selection.copyAbsoluteRange",
+        "key": "ctrl+shift+alt+c",
+        "when": "editorTextFocus && !editorReadonly"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "pnpm run compile && pnpm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@types/vscode": "^1.79.0",
+    "@typescript-eslint/eslint-plugin": "^7.7.1",
+    "@typescript-eslint/parser": "^7.7.1",
+    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-electron": "^2.3.9",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@types/xml2js": "^0.4.14",
+    "json5": "^2.2.3",
+    "xml2js": "^0.6.2",
+    "dayjs": "^1.11.11"
+  }
+}
