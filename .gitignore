@@ -1,5 +1,7 @@
 out
+out-tests
 dist
+logs
 node_modules
 .vscode-test/
 *.vsix

@@ -29,7 +29,45 @@
         }
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mx-dev-toolkit-httpClientContainer",
+          "title": "HTTP Client",
+          "icon": "media/http-lab.svg"
+        }
+      ]
+    },
+    "views": {
+      "mx-dev-toolkit-httpClientContainer": [
+        {
+          "type": "webview",
+          "id": "mx-dev-toolkit-httpClientLauncher",
+          "name": "HTTP Client"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "mx-dev-toolkit.httpClient.openWorkbench",
+        "title": "mx http open"
+      },
+      {
+        "command": "mx-dev-toolkit.httpClient.sendCurrent",
+        "title": "mx http send"
+      },
+      {
+        "command": "mx-dev-toolkit.httpClient.saveCurrent",
+        "title": "mx http save"
+      },
+      {
+        "command": "mx-dev-toolkit.httpClient.importCurl",
+        "title": "mx http import curl"
+      },
+      {
+        "command": "mx-dev-toolkit.httpClient.runLoadTest",
+        "title": "mx http load test"
+      },
       {
         "command": "mx-dev-toolkit.keil.build",
         "title": "mx keil build"
@@ -64,7 +102,9 @@
     "vscode:prepublish": "pnpm run compile",
     "compile": "tsc -p ./ --noEmit && esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap",
     "watch": "esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap --watch",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test:http-client": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/http_client/tests/store.test.js out-tests/http_client/tests/resolver.test.js out-tests/http_client/tests/runner.test.js out-tests/http_client/tests/load_runner.test.js out-tests/http_client/tests/curl_import.test.js out-tests/http_client/tests/webview_state.test.js out-tests/http_client/tests/panel.test.js",
+    "test": "pnpm test:http-client"
   },
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {
