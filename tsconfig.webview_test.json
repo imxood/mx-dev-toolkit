@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "out-tests-webview",
+    "rootDir": ".",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ]
+  },
+  "include": [
+    "webviews/http_client/shared/**/*.ts",
+    "webviews/http_client/tests/**/*.ts",
+    "src/http_client/types.ts",
+    "src/http_client/tests/helpers.ts",
+    "src/toast/types.ts"
+  ],
+  "exclude": [
+    "out",
+    "out-tests",
+    "out-tests-webview",
+    "node_modules"
+  ]
+}

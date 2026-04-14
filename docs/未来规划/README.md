@@ -17,3 +17,7 @@
 - [HTTP客户端Webview React化迁移设计.md](./HTTP客户端Webview%20React化迁移设计.md)
   - 状态: 规划
   - 说明: 在不改变当前功能和 UI 的前提下, 将 HTTP Client 的 Webview 层迁移到 `React + TailwindCSS + TypeScript` 的实施设计.
+
+- [HTTP客户端Webview React化TODO规划.md](./HTTP客户端Webview%20React化TODO规划.md)
+  - 状态: 规划
+  - 说明: Webview React 化的生产级实施清单, 包括阶段目标, 回归门禁和回滚策略.

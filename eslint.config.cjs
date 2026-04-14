@@ -3,15 +3,18 @@ const tsPlugin = require("@typescript-eslint/eslint-plugin");
 
 module.exports = [
   {
-    ignores: ["out/**", "dist/**", "**/*.d.ts"],
+    ignores: ["out/**", "out-tests/**", "dist/**", "media/http_client/**", "**/*.d.ts"],
   },
   {
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.ts", "webviews/http_client/**/*.ts", "webviews/http_client/**/*.tsx"],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
         ecmaVersion: "latest",
         sourceType: "module",
+        ecmaFeatures: {
+          jsx: true,
+        },
       },
     },
     plugins: {

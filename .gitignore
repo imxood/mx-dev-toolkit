@@ -1,7 +1,9 @@
 out
 out-tests
+out-tests-webview
 dist
 logs
+media/http_client
 node_modules
 .vscode-test/
 *.vsix

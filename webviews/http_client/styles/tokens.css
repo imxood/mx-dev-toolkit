@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light dark;
+  --app-bg: var(--vscode-editor-background, #1e1e1e);
+  --surface: var(--vscode-editorWidget-background, var(--app-bg));
+  --surface-alt: var(--vscode-panel-background, var(--app-bg));
+  --border: var(--vscode-panel-border, rgba(128, 128, 128, 0.32));
+  --border-soft: var(--vscode-widget-border, rgba(128, 128, 128, 0.18));
+  --input-bg: var(--vscode-input-background, rgba(255, 255, 255, 0.04));
+  --input-border: var(--vscode-input-border, rgba(128, 128, 128, 0.32));
+  --hover-bg: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+  --active-bg: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.08));
+  --focus: var(--vscode-focusBorder, #007fd4);
+  --button-bg: var(--vscode-button-background, #0e639c);
+  --button-hover: var(--vscode-button-hoverBackground, #1177bb);
+  --button-fg: var(--vscode-button-foreground, #ffffff);
+  --button-secondary-bg: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.06));
+  --button-secondary-fg: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #cccccc));
+  --text: var(--vscode-foreground, #cccccc);
+  --muted: var(--vscode-descriptionForeground, #9a9a9a);
+  --soft: var(--vscode-disabledForeground, #757575);
+  --success: #73c991;
+  --warning: #d7ba7d;
+  --danger: #f48771;
+  --json-key: #9cdcfe;
+  --json-string: #ce9178;
+  --json-number: #b5cea8;
+  --json-boolean: #569cd6;
+  --json-null: #c586c0;
+  --radius: 4px;
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --control-height: 28px;
+  --input-height: 32px;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-code: var(--vscode-editor-font-family, "Cascadia Code", Consolas, monospace);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--text);
+  font: 13px/1.45 var(--font-ui);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}

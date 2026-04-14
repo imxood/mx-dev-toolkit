@@ -109,29 +109,36 @@
 2. `TypeScript` 可继续与现有宿主类型系统对齐.
 3. `TailwindCSS` 适合作为构建期样式组织工具, 便于在不改视觉的前提下整理布局和密度规则.
 
-### 5.2 不选择 Vite 作为第一落地方案
+### 5.2 Webview 构建选择 Vite
 
-第一落地阶段优先建议:
+本项目的最优工程方案不是单一构建器覆盖全部代码, 而是按运行环境分离:
 
-- `esbuild` 负责打包 Webview TSX
-- `TailwindCSS CLI` 负责输出静态 CSS
+- `extension host`: 继续使用现有 `esbuild`
+- `webview frontend`: 使用 `Vite`
 
 原因:
 
-1. 仓库当前已经使用 `esbuild`.
-2. 目标是严格保留现状行为, 不需要先引入更重的 Dev Server 体系.
-3. 构建脚本越简单, 越有利于排查 VS Code Webview 的 CSP 和资源路径问题.
+1. 扩展宿主是 Node 侧单入口打包场景, 现有 `esbuild` 已经足够稳定且高效.
+2. Webview 本质上是浏览器前端应用, `Vite` 对 React, CSS, 多入口和静态资源处理更成熟.
+3. `TailwindCSS` 与 `Vite` 的集成链路标准, 维护成本低于手工拼装自定义 CSS 构建链.
+4. 当前 HTTP Client 已经存在工作台, 侧边栏, Toast 等多个前端区块, 继续扩展时 `Vite` 更利于维护.
 
-后续若确实需要更强的前端开发体验, 再评估 `Vite` 是否值得引入.
+结论:
+
+- 继续保留当前宿主侧 `esbuild`.
+- 新增一套只服务于 Webview 的 `Vite` 前端构建链.
+- 不把整个插件工程迁移到 `Vite`.
 
 ### 5.3 Tailwind 使用原则
 
 Tailwind 在本项目中必须遵守以下规则:
 
-1. 关闭 `preflight`, 避免干扰 VS Code Webview 的桌面化细节.
-2. 优先使用 VS Code 主题变量, 不允许用 Tailwind 默认调色板替代现有主题体系.
-3. 允许 `Tailwind utility + 少量语义化组件类 + 保留设计 token CSS` 共存.
-4. 不要求把所有现有样式机械改写成纯 utility class.
+1. 使用最新版本 `TailwindCSS` 与 `@tailwindcss/vite`.
+2. 关闭 `preflight`, 避免干扰 VS Code Webview 的桌面化细节.
+3. `preflight` 关闭通过选择性导入 `theme.css` 与 `utilities.css` 实现, 不依赖旧版 `corePlugins.preflight`.
+4. 优先使用 VS Code 主题变量, 不允许用 Tailwind 默认调色板替代现有主题体系.
+5. 允许 `Tailwind utility + 少量语义化组件类 + 保留设计 token CSS` 共存.
+6. 不要求把所有现有样式机械改写成纯 utility class.
 
 结论是:
 
@@ -175,25 +182,17 @@ webviews/http_client/
 ├─ workbench/
 │  ├─ main.tsx
 │  ├─ App.tsx
-│  ├─ components/
-│  ├─ hooks/
-│  └─ pages/
+│  └─ workbench.css
 ├─ sidebar/
 │  ├─ main.tsx
 │  ├─ SidebarApp.tsx
-│  └─ components/
+│  └─ sidebar.css
 ├─ shared/
 │  ├─ vscode.ts
-│  ├─ protocol.ts
-│  ├─ toast.tsx
-│  ├─ state.ts
-│  └─ utils/
+│  └─ bootstrap.ts
 ├─ styles/
-│  ├─ tokens.css
-│  ├─ workbench.css
-│  ├─ sidebar.css
-│  └─ tailwind.css
-└─ tailwind.config.js
+│  └─ tokens.css
+└─ vite.config.ts
 ```
 
 扩展宿主侧保留最小 HTML 装载器:
@@ -221,14 +220,17 @@ media/http_client/
 ├─ workbench.js
 ├─ workbench.css
 ├─ sidebar.js
-└─ sidebar.css
+├─ sidebar.css
+└─ chunks/
+   └─ jsx-runtime.js
 ```
 
 原因:
 
 1. VS Code 扩展打包对固定资源路径更友好.
-2. 不必引入复杂的 manifest 解析逻辑.
-3. 当前目标不是前端网站发布, 没有必要引入 hash 文件名策略.
+2. 宿主侧可以直接按固定入口文件名生成 `webview.asWebviewUri`.
+3. 共享运行时允许输出到 `chunks/` 目录, 但文件名保持稳定, 不采用 hash.
+4. 当前目标不是前端网站发布, 没有必要引入 hash 文件名策略.
 
 ### 8.2 构建脚本建议
 
@@ -236,8 +238,8 @@ media/http_client/
 
 ```json
 {
-  "compile:webview": "...",
-  "watch:webview": "...",
+  "compile:webview": "tsc -p ./webviews/http_client/tsconfig.json --noEmit && vite build --config webviews/http_client/vite.config.ts",
+  "watch:webview": "vite build --watch --config webviews/http_client/vite.config.ts",
   "compile": "pnpm compile:webview && 原有 extension build",
   "watch": "并行 watch webview 与 extension"
 }
@@ -261,6 +263,13 @@ media/http_client/
 1. 在 HTML 中挂载根节点.
 2. 通过一个极小的启动脚本把 `initialState` 放到 `window`.
 3. React 启动后读取该初始状态并进入受控渲染.
+
+宿主侧仍然负责:
+
+- CSP
+- 初始状态序列化
+- 资源 URI 注入
+- `acquireVsCodeApi()` 可用上下文提供
 
 ## 9. React 组件切分方案
 
@@ -446,6 +455,12 @@ SidebarApp
 - 接通统一 ToastCenter
 - 完成边界状态验证
 - 删除旧版内联脚本主实现
+
+当前落地决策:
+
+- 运行路径切换阶段继续复用现有稳定的 Toast host 脚本和样式.
+- React workbench / sidebar 只负责把 `mxToast/show` 转发给统一 Toast host.
+- 这样可以保证多 Toast, 悬停暂停, 锁位, 复制按钮等行为完全保持一致, 不为迁移引入第二套 Toast 运行时.
 
 ### 阶段 6. 全量验收
 

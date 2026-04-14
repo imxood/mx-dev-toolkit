@@ -58,6 +58,10 @@
   - 状态: 规划
   - 说明: 在保持当前功能和 UI 完全一致的前提下, 将 HTTP Client Webview 迁移到 `React + TailwindCSS + TypeScript` 的实施设计.
 
+- [未来规划/HTTP客户端Webview React化TODO规划.md](./未来规划/HTTP客户端Webview%20React化TODO规划.md)
+  - 状态: 规划
+  - 说明: Webview React 化的生产级 TODO 规划, 用于约束阶段执行, 回归门禁和回滚策略.
+
 ## 6. 当前结论
 
 截至 2026-04-14, HTTP Client 已完成 MVP 实现并进入稳定性收口阶段, 插件级统一 Toast 已完成落地. 当前文档中的重要稳定性结论包括:
