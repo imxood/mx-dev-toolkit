@@ -6,7 +6,8 @@
     "rootDir": "src"
   },
   "include": [
-    "src/http_client/**/*.ts"
+    "src/http_client/**/*.ts",
+    "src/toast/**/*.ts"
   ],
   "exclude": [
     "out",

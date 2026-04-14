@@ -5,6 +5,7 @@ import { renderResponseViewerShell } from "./ui/response_viewer";
 import { getWebviewScript } from "./state";
 import { renderToolbarShell } from "./ui/toolbar";
 import { HTTP_CLIENT_STYLES } from "./styles";
+import { TOAST_HOST_MARKUP } from "../../toast/webview";
 
 export function getHttpClientHtml(
   webview: vscode.Webview,
@@ -28,10 +29,10 @@ export function getHttpClientHtml(
         <main class="editor-shell">
           ${renderToolbarShell()}
           ${renderRequestEditorShell()}
-          <div id="message-banner" class="message-banner"></div>
         </main>
         ${renderResponseViewerShell()}
       </div>
+      ${TOAST_HOST_MARKUP}
       ${getWebviewScript(initialState).replace("<script>", `<script nonce="${nonce}">`)}
     </body>
   </html>`;

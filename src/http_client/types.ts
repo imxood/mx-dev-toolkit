@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { ToastNotifyMessage, ToastToWebviewMessage } from "../toast/types";
 
 export const HTTP_CLIENT_CONFIG_VERSION = 1;
 export const HTTP_CLIENT_CONFIG_FILE = "mx_http_client.json";
@@ -111,6 +112,7 @@ export interface HttpResponseResult {
   ok: boolean;
   status: number;
   statusText: string;
+  bodyRawText: string;
   bodyText: string;
   bodyPrettyText: string;
   isJson: boolean;
@@ -241,6 +243,7 @@ export interface HttpClientResponseAckPayload {
 
 export type WebviewToExtensionMessage =
   | { type: "httpClient/init"; payload?: { buildId?: string } }
+  | ToastNotifyMessage
   | { type: "httpClient/uiStateChanged"; payload: { activeTab: "params" | "headers" | "body"; responseTab: "body" | "headers" | "meta" | "loadTest" } }
   | { type: "httpClient/draftChanged"; payload: { request: HttpRequestEntity; dirty: boolean } }
   | { type: "httpClient/cancelRequest" }
@@ -265,6 +268,7 @@ export type WebviewToExtensionMessage =
   | { type: "httpClient/frontendLog"; payload: HttpClientFrontendLogPayload };
 
 export type ExtensionToWebviewMessage =
+  | ToastToWebviewMessage
   | { type: "httpClient/state"; payload: HttpClientViewState }
   | { type: "httpClient/response"; payload: HttpResponseResult }
   | { type: "httpClient/loadTest/progress"; payload: HttpLoadTestProgress }
@@ -382,16 +386,18 @@ export function percentile(values: number[], ratio: number): number {
   return sorted[index];
 }
 
-export function safePrettyJson(input: string): { isJson: boolean; prettyText: string } {
+export function safePrettyJson(input: string): { isJson: boolean; displayText: string; prettyText: string } {
   try {
     const parsed = JSON.parse(input);
     return {
       isJson: true,
+      displayText: JSON.stringify(parsed),
       prettyText: JSON.stringify(parsed, null, 2),
     };
   } catch {
     return {
       isJson: false,
+      displayText: input,
       prettyText: input,
     };
   }

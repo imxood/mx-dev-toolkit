@@ -37,5 +37,14 @@ test("webview_state: 生成的 webview 脚本可被浏览器解释执行", async
     new vm.Script(match?.[1] ?? "");
   });
 
-  await logger.conclusion("webview state 脚本语法有效, 可继续执行运行时初始化");
+  await logger.verify("检查脚本已包含 JSON 高亮, 响应复制和统一 Toast 处理逻辑");
+  assert.match(match?.[1] ?? "", /function renderJsonHighlightedText/);
+  assert.match(match?.[1] ?? "", /data-action="copy-response"/);
+  assert.match(match?.[1] ?? "", /mxToast\/show/);
+  assert.match(match?.[1] ?? "", /window\.__mxToastCenter/);
+  assert.match(match?.[1] ?? "", /const MAX_TOASTS = 8/);
+  assert.match(match?.[1] ?? "", /data-toast-action="copy"/);
+  assert.match(match?.[1] ?? "", /mouseenter/);
+
+  await logger.conclusion("webview state 脚本语法有效, 且已接入统一 Toast 渲染逻辑");
 });

@@ -103,8 +103,9 @@
     "compile": "tsc -p ./ --noEmit && esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap",
     "watch": "esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.js --external:vscode --sourcemap --watch",
     "lint": "eslint src --ext ts",
-    "test:http-client": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/http_client/tests/store.test.js out-tests/http_client/tests/resolver.test.js out-tests/http_client/tests/runner.test.js out-tests/http_client/tests/load_runner.test.js out-tests/http_client/tests/curl_import.test.js out-tests/http_client/tests/webview_state.test.js out-tests/http_client/tests/panel.test.js",
-    "test": "pnpm test:http-client"
+    "test:http-client": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/http_client/tests/store.test.js out-tests/http_client/tests/resolver.test.js out-tests/http_client/tests/runner.test.js out-tests/http_client/tests/load_runner.test.js out-tests/http_client/tests/curl_import.test.js out-tests/http_client/tests/webview_state.test.js out-tests/http_client/tests/sidebar_view.test.js out-tests/http_client/tests/panel.test.js",
+    "test:toast": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/toast/tests/service.test.js",
+    "test": "pnpm test:http-client && pnpm test:toast"
   },
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {

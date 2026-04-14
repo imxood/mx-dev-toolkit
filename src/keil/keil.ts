@@ -15,6 +15,7 @@ import {
   copyOutputBinToFolder,
   runKeil,
 } from "./runner";
+import { ToastService } from "../toast/service";
 
 export class KeilService {
   project = "";
@@ -37,7 +38,7 @@ export class KeilService {
     return join(this.vscodeRoot, "uv4.log");
   }
 
-  constructor(channel: vscode.OutputChannel) {
+  constructor(channel: vscode.OutputChannel, private readonly toastService: ToastService) {
     this.channel = channel;
   }
 
@@ -69,7 +70,11 @@ export class KeilService {
 
   async generateConfig(): Promise<void> {
     if (!this.workDir) {
-      vscode.window.showErrorMessage(`No workspace opened. Cannot generate ${MX_DEV_CONFIG_FILE}`);
+      await this.toastService.notify({
+        kind: "error",
+        message: `未打开工作区, 无法生成 ${MX_DEV_CONFIG_FILE}`,
+        source: "keil.generateConfig",
+      });
       return;
     }
 
@@ -81,7 +86,11 @@ export class KeilService {
     const files = await vscode.workspace.findFiles(pattern, "**/{node_modules,out,dist,eh_keil_tool/target}/**");
 
     if (files.length === 0) {
-      vscode.window.showErrorMessage("No .uvprojx project found");
+      await this.toastService.notify({
+        kind: "error",
+        message: "未找到 .uvprojx 工程文件",
+        source: "keil.generateConfig",
+      });
       return;
     }
 
@@ -133,13 +142,22 @@ export class KeilService {
     try {
       await this.refreshParsedProjectForRun();
     } catch (error) {
-      vscode.window.showErrorMessage((error as Error).message);
+      await this.toastService.notify({
+        kind: "error",
+        message: (error as Error).message,
+        source: "keil.run",
+      });
       return;
     }
 
     const uv4Exe = this.config.get("Uv4Path") as string;
     if (!uv4Exe || !fs.existsSync(uv4Exe)) {
-      vscode.window.showErrorMessage(`UV4.exe not found at: '${uv4Exe}'`);
+      await this.toastService.notify({
+        kind: "error",
+        message: `UV4.exe 未找到: ${uv4Exe}`,
+        copyText: uv4Exe || "",
+        source: "keil.run",
+      });
       return;
     }
 

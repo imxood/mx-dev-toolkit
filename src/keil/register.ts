@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { KeilService } from "./keil";
+import { ToastService } from "../toast/service";
 
 const CMD_KEIL_BUILD = "mx-dev-toolkit.keil.build";
 const CMD_KEIL_REBUILD = "mx-dev-toolkit.keil.rebuild";
@@ -8,8 +9,12 @@ const CMD_KEIL_CLEAN = "mx-dev-toolkit.keil.clean";
 const CMD_KEIL_GEN_CONFIG = "mx-dev-toolkit.keil.generateConfig";
 const MX_DEV_CONFIG_FILE = "mx_dev.json";
 
-export function registerKeil(context: vscode.ExtensionContext, channel: vscode.OutputChannel): void {
-  const keil = new KeilService(channel);
+export function registerKeil(
+  context: vscode.ExtensionContext,
+  channel: vscode.OutputChannel,
+  toastService: ToastService
+): void {
+  const keil = new KeilService(channel, toastService);
   const workspace = vscode.workspace.workspaceFolders?.[0];
   if (workspace) {
     void keil.load(workspace.uri.fsPath);
@@ -17,7 +22,11 @@ export function registerKeil(context: vscode.ExtensionContext, channel: vscode.O
 
   const runWithLock = async (action: () => Promise<void>) => {
     if (keil.running) {
-      vscode.window.showWarningMessage("A task is already running. Please wait...");
+      await toastService.notify({
+        kind: "warning",
+        message: "已有任务正在执行, 请稍后再试",
+        source: "keil.command",
+      });
       return;
     }
     keil.running = true;

@@ -13,7 +13,7 @@ test("runner: 正常请求可返回 JSON 响应并解析 Meta", async () => {
   const { server, url } = await createMockServer((_req, res) => {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, items: [1, 2, 3] }));
+    res.end('{"ok":true,"message":"\\u83b7\\u53d6\\u6210\\u529f","items":[1,2,3]}');
   });
 
   try {
@@ -30,7 +30,10 @@ test("runner: 正常请求可返回 JSON 响应并解析 Meta", async () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.isJson, true);
+    assert.match(response.bodyRawText, /\\u83b7\\u53d6\\u6210\\u529f/);
+    assert.match(response.bodyText, /获取成功/);
     assert.match(response.bodyPrettyText, /"items": \[/);
+    assert.match(response.bodyPrettyText, /获取成功/);
     assert.equal(response.meta.finalUrl, `${url}/products`);
     assert.ok(response.meta.sizeBytes > 0);
     await logger.verify(`响应耗时: ${response.meta.durationMs} ms`);

@@ -2,6 +2,9 @@ import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { HttpClientPanelController } from "./panel";
 import { HttpClientViewState } from "./types";
+import { ToastService } from "../toast/service";
+import { ToastToWebviewMessage } from "../toast/types";
+import { TOAST_HOST_MARKUP, TOAST_HOST_SCRIPT, TOAST_HOST_STYLES } from "../toast/webview";
 
 type SidebarMessage =
   | { type: "httpClientSidebar/init" }
@@ -15,26 +18,47 @@ type SidebarMessage =
 type SidebarOutboundMessage = {
   type: "httpClientSidebar/state";
   payload: HttpClientViewState;
-};
+} | ToastToWebviewMessage;
 
 export class HttpClientSidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   public static readonly viewType = "mx-dev-toolkit-httpClientLauncher";
 
   private view: vscode.WebviewView | null = null;
   private readonly stateChangeDisposable: vscode.Disposable;
+  private readonly toastHostDisposable: { dispose(): void };
+  private viewReady = false;
 
-  constructor(private readonly controller: HttpClientPanelController) {
+  constructor(
+    private readonly controller: HttpClientPanelController,
+    private readonly toastService: ToastService
+  ) {
     this.stateChangeDisposable = this.controller.onDidChangeState(() => {
       void this.postState();
+    });
+    this.toastHostDisposable = this.toastService.registerHost({
+      id: "httpClient.sidebar",
+      priority: 50,
+      isAvailable: () => Boolean(this.view && this.view.visible && this.viewReady),
+      postToast: async (toast) => {
+        if (!this.view) {
+          return false;
+        }
+        return this.view.webview.postMessage({
+          type: "mxToast/show",
+          payload: toast,
+        });
+      },
     });
   }
 
   public dispose(): void {
     this.stateChangeDisposable.dispose();
+    this.toastHostDisposable.dispose();
   }
 
   public async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
     this.view = webviewView;
+    this.viewReady = false;
     webviewView.webview.options = {
       enableScripts: true,
     };
@@ -48,6 +72,7 @@ export class HttpClientSidebarProvider implements vscode.WebviewViewProvider, vs
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = null;
+        this.viewReady = false;
       }
     });
     await this.postState();
@@ -56,6 +81,7 @@ export class HttpClientSidebarProvider implements vscode.WebviewViewProvider, vs
   private async handleMessage(message: SidebarMessage): Promise<void> {
     switch (message.type) {
       case "httpClientSidebar/init":
+        this.viewReady = true;
         await this.postState();
         return;
       case "httpClientSidebar/createRequest":
@@ -97,7 +123,7 @@ function createNonce(): string {
   return randomUUID().replace(/-/g, "");
 }
 
-function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
+export function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
   return `<!DOCTYPE html>
   <html lang="zh-CN">
     <head>
@@ -154,7 +180,7 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
 
         .sidebar-shell {
           display: grid;
-          grid-template-rows: auto auto auto minmax(0, 1fr);
+          grid-template-rows: auto auto auto auto minmax(0, 1fr);
           gap: 8px;
           height: 100vh;
           padding: 10px 10px 8px;
@@ -447,7 +473,11 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
         .item-subtitle,
         .list-meta span,
         .environment-main span,
-        .environment-main small {
+        .environment-main small,
+        .history-group-title,
+        .history-group-url,
+        .history-record-caption,
+        .history-group-more {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -473,6 +503,143 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
 
         .list-meta {
           gap: 8px;
+        }
+
+        .history-group-card {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+          border: 1px solid var(--border);
+          border-radius: calc(var(--radius) + 1px);
+          background: var(--surface);
+          overflow: hidden;
+        }
+
+        .history-group-card.active {
+          border-color: var(--focus);
+          background: var(--active);
+        }
+
+        .history-group-head {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 24px;
+          gap: 4px;
+          align-items: start;
+          padding: 6px;
+        }
+
+        .history-group-main,
+        .history-record-item {
+          width: 100%;
+          border: none;
+          background: transparent;
+          color: inherit;
+          text-align: left;
+        }
+
+        .history-group-main {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 0;
+          padding: 0;
+        }
+
+        .history-group-main:hover .history-group-title,
+        .history-record-item:hover .history-record-caption {
+          color: var(--text);
+        }
+
+        .history-group-top,
+        .history-record-top {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+        }
+
+        .history-group-title {
+          flex: 1;
+          min-width: 0;
+          color: var(--text);
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .history-group-count {
+          flex: 0 0 auto;
+          min-width: 36px;
+          padding: 0 6px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--muted);
+          font-size: 10px;
+          line-height: 18px;
+          text-align: center;
+        }
+
+        .history-group-url,
+        .history-record-caption {
+          color: var(--muted);
+          font-size: 11px;
+        }
+
+        .history-group-meta,
+        .history-record-meta {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+          color: var(--muted);
+          font-size: 11px;
+        }
+
+        .history-group-toggle {
+          width: 24px;
+          min-width: 24px;
+          height: 24px;
+          padding: 0;
+          border-color: transparent;
+          background: transparent;
+          color: var(--soft);
+        }
+
+        .history-group-toggle:hover {
+          border-color: var(--input-border);
+          background: var(--hover);
+          color: var(--text);
+        }
+
+        .history-group-items {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 0 6px 6px;
+          border-top: 1px solid var(--border);
+        }
+
+        .history-record-item {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding: 6px;
+          border: 1px dashed rgba(128, 128, 128, 0.18);
+          border-radius: var(--radius);
+        }
+
+        .history-record-item:hover {
+          border-color: rgba(128, 128, 128, 0.28);
+          background: var(--hover);
+        }
+
+        .history-record-item.latest {
+          border-style: solid;
+        }
+
+        .history-record-more {
+          padding: 2px 2px 0;
+          color: var(--soft);
+          font-size: 10px;
         }
 
         .environment-item {
@@ -506,6 +673,8 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
           font-size: 12px;
           font-weight: 600;
         }
+
+        ${TOAST_HOST_STYLES}
       </style>
     </head>
     <body>
@@ -515,7 +684,7 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
         </div>
         <button class="primary-button" data-action="createRequest" type="button">新建 HTTP 连接</button>
         <div class="tab-strip">
-          <button class="tab-button active" data-tab="activity" type="button">历史</button>
+          <button class="tab-button active" data-tab="activity" type="button">记录</button>
           <button class="tab-button" data-tab="collections" type="button">集合</button>
           <button class="tab-button" data-tab="environments" type="button">环境</button>
         </div>
@@ -527,11 +696,14 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
           <div id="list-body" class="list-body"></div>
         </div>
       </div>
+      ${TOAST_HOST_MARKUP}
       <script nonce="${nonce}">
+        ${TOAST_HOST_SCRIPT}
         const vscode = acquireVsCodeApi();
         const uiState = {
           activeTab: "activity",
-          keyword: ""
+          keyword: "",
+          expandedHistoryGroups: {}
         };
         let state = null;
 
@@ -569,6 +741,88 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
           return days + " 天前";
         }
 
+        function formatClock(input) {
+          const value = new Date(input);
+          if (Number.isNaN(value.getTime())) {
+            return "";
+          }
+          return value.toLocaleTimeString("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          });
+        }
+
+        function normalizeHistoryUrl(rawUrl) {
+          const value = String(rawUrl || "").trim();
+          if (!value) {
+            return "";
+          }
+          return value.replace(/\\/+$/, "");
+        }
+
+        function getHistoryGroupKey(item) {
+          const requestId = String(item && item.request && item.request.id || "").trim();
+          if (requestId) {
+            return "request:" + requestId;
+          }
+          return "fallback:" + String(item.request.method || "GET") + ":" + normalizeHistoryUrl(item.request.url || "");
+        }
+
+        function buildHistoryGroups() {
+          const recentItems = state.history.slice(0, 30);
+          const grouped = new Map();
+          recentItems.forEach((item) => {
+            const key = getHistoryGroupKey(item);
+            const current = grouped.get(key);
+            if (current) {
+              current.records.push(item);
+              return;
+            }
+            grouped.set(key, {
+              key,
+              requestId: item.request && item.request.id ? item.request.id : null,
+              title: item.request && item.request.name ? item.request.name : "未命名请求",
+              method: item.request && item.request.method ? item.request.method : "GET",
+              latestUrl: item.request && item.request.url ? item.request.url : "未填写 URL",
+              latestRecord: item,
+              records: [item]
+            });
+          });
+
+          const match = matchesKeyword();
+          const keyword = uiState.keyword.trim();
+          const groups = Array.from(grouped.values())
+            .filter((group) => {
+              if (!keyword) {
+                return true;
+              }
+              if (match(group.title + " " + group.latestUrl + " " + group.method)) {
+                return true;
+              }
+              return group.records.some((record) => {
+                return match(record.request.name + " " + record.request.url + " " + String(record.responseSummary.status ?? "ERR"));
+              });
+            })
+            .map((group) => ({
+              ...group,
+              totalCount: group.records.length
+            }))
+            .sort((left, right) => left.latestRecord.executedAt < right.latestRecord.executedAt ? 1 : -1);
+
+          const nextExpanded = {};
+          groups.forEach((group) => {
+            if (uiState.expandedHistoryGroups[group.key]) {
+              nextExpanded[group.key] = true;
+            }
+          });
+          if (groups.length > 0 && !groups.some((group) => nextExpanded[group.key])) {
+            nextExpanded[groups[0].key] = true;
+          }
+          uiState.expandedHistoryGroups = nextExpanded;
+          return groups;
+        }
+
         function updateTabs() {
           document.querySelectorAll("[data-tab]").forEach((button) => {
             button.classList.toggle("active", button.getAttribute("data-tab") === uiState.activeTab);
@@ -586,7 +840,7 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
             return;
           }
           if (uiState.activeTab === "collections") {
-            head.innerHTML = renderPanelHead("Collections", "浏览请求集合", "createCollection");
+            head.innerHTML = renderPanelHead("集合", "浏览请求集合", "createCollection");
             if (searchInput) {
               searchInput.placeholder = "筛选集合或请求";
             }
@@ -594,14 +848,14 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
             return;
           }
           if (uiState.activeTab === "environments") {
-            head.innerHTML = renderPanelHead("Environments", "切换当前环境", "createEnvironment");
+            head.innerHTML = renderPanelHead("环境", "切换当前环境", "createEnvironment");
             if (searchInput) {
               searchInput.placeholder = "筛选环境";
             }
             body.innerHTML = renderEnvironments();
             return;
           }
-          head.innerHTML = renderPanelHead("Activity", "最近请求记录", null);
+          head.innerHTML = renderPanelHead("最近请求记录", "30 条", null);
           if (searchInput) {
             searchInput.placeholder = "筛选历史记录";
           }
@@ -675,28 +929,66 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
         }
 
         function renderActivity() {
-          const match = matchesKeyword();
-          const items = state.history.filter((item) => match(item.request.name + " " + item.request.url)).slice(0, 30);
-          if (items.length === 0) {
+          const groups = buildHistoryGroups();
+          if (groups.length === 0) {
             return renderRequestEmptyState(state.history.length === 0 ? "暂无历史记录" : "没有匹配的历史记录", state.history.length === 0);
           }
-          return items.map((item) => {
-            const statusValue = item.responseSummary.status === null ? "ERR" : String(item.responseSummary.status);
-            const statusClass = item.responseSummary.ok ? "ok" : item.responseSummary.status === null ? "neutral" : "error";
-            return (
-              '<button class="list-item" data-action="selectHistory" data-history-id="' + item.id + '" type="button">' +
-                '<div class="list-main">' +
-                  '<span class="method-pill method-' + item.request.method.toLowerCase() + '">' + item.request.method + '</span>' +
-                  '<span class="item-title">' + escapeHtml(item.request.name) + '</span>' +
-                '</div>' +
-                '<div class="list-meta">' +
-                  '<span class="status-pill ' + statusClass + '">' + escapeHtml(statusValue) + '</span>' +
-                  '<span>' + escapeHtml(relativeTime(item.executedAt)) + '</span>' +
+          return groups.map((group) => renderHistoryGroup(group)).join("");
+        }
+
+        function renderHistoryGroup(group) {
+          const latest = group.latestRecord;
+          const statusValue = latest.responseSummary.status === null ? "ERR" : String(latest.responseSummary.status);
+          const statusClass = latest.responseSummary.ok ? "ok" : latest.responseSummary.status === null ? "neutral" : "error";
+          const expanded = Boolean(uiState.expandedHistoryGroups[group.key]);
+          const activeClass = group.requestId && state.activeRequestId === group.requestId ? " active" : "";
+          const overflowCount = Math.max(0, group.totalCount - 3);
+          return (
+            '<div class="history-group-card' + activeClass + '">' +
+              '<div class="history-group-head">' +
+                '<button class="history-group-main" data-action="select-history-group" data-history-id="' + latest.id + '" type="button">' +
+                  '<div class="history-group-top">' +
+                    '<span class="method-pill method-' + group.method.toLowerCase() + '">' + group.method + '</span>' +
+                    '<span class="history-group-title">' + escapeHtml(group.title) + '</span>' +
+                    '<span class="history-group-count">' + group.totalCount + ' 次</span>' +
+                  '</div>' +
+                  '<div class="history-group-url">' + escapeHtml(group.latestUrl || "未填写 URL") + '</div>' +
+                  '<div class="history-group-meta">' +
+                    '<span class="status-pill ' + statusClass + '">' + escapeHtml(statusValue) + '</span>' +
+                    '<span>' + latest.responseSummary.durationMs + ' ms</span>' +
+                    '<span>' + escapeHtml(relativeTime(latest.executedAt)) + '</span>' +
+                  '</div>' +
+                '</button>' +
+                '<button class="icon-button history-group-toggle" data-action="toggle-history-group" data-group-key="' + encodeURIComponent(group.key) + '" type="button" aria-label="' + (expanded ? "收起记录" : "展开记录") + '">' + (expanded ? "−" : "+") + '</button>' +
+              '</div>' +
+              (
+                expanded
+                  ? '<div class="history-group-items">' +
+                      group.records.slice(0, 3).map((record, index) => renderHistoryRecordItem(record, index === 0)).join("") +
+                      (overflowCount > 0 ? '<div class="history-record-more">还有 ' + overflowCount + ' 条较早记录</div>' : "") +
+                    '</div>'
+                  : ""
+              ) +
+            '</div>'
+          );
+        }
+
+        function renderHistoryRecordItem(item, latest) {
+          const statusValue = item.responseSummary.status === null ? "ERR" : String(item.responseSummary.status);
+          const statusClass = item.responseSummary.ok ? "ok" : item.responseSummary.status === null ? "neutral" : "error";
+          const latestClass = latest ? " latest" : "";
+          return (
+            '<button class="history-record-item' + latestClass + '" data-action="selectHistory" data-history-id="' + item.id + '" type="button">' +
+              '<div class="history-record-top">' +
+                '<span class="status-pill ' + statusClass + '">' + escapeHtml(statusValue) + '</span>' +
+                '<div class="history-record-meta">' +
                   '<span>' + item.responseSummary.durationMs + ' ms</span>' +
+                  '<span>' + escapeHtml(formatClock(item.executedAt)) + '</span>' +
                 '</div>' +
-              '</button>'
-            );
-          }).join("");
+              '</div>' +
+              '<div class="history-record-caption">' + escapeHtml(item.request.url || "未填写 URL") + '</div>' +
+            '</button>'
+          );
         }
 
         function renderEnvironments() {
@@ -791,6 +1083,23 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
             });
             return;
           }
+          if (action === "select-history-group") {
+            vscode.postMessage({
+              type: "httpClientSidebar/selectHistory",
+              payload: { historyId: target.getAttribute("data-history-id") }
+            });
+            return;
+          }
+          if (action === "toggle-history-group") {
+            const encodedKey = target.getAttribute("data-group-key");
+            if (!encodedKey) {
+              return;
+            }
+            const groupKey = decodeURIComponent(encodedKey);
+            uiState.expandedHistoryGroups[groupKey] = !uiState.expandedHistoryGroups[groupKey];
+            render();
+            return;
+          }
           if (action === "selectHistory") {
             vscode.postMessage({
               type: "httpClientSidebar/selectHistory",
@@ -815,7 +1124,14 @@ function getSidebarHtml(webview: vscode.Webview, nonce: string): string {
 
         window.addEventListener("message", (event) => {
           const message = event.data;
-          if (!message || message.type !== "httpClientSidebar/state") {
+          if (!message) {
+            return;
+          }
+          if (message.type === "mxToast/show") {
+            window.__mxToastCenter.push(message.payload);
+            return;
+          }
+          if (message.type !== "httpClientSidebar/state") {
             return;
           }
           state = message.payload;

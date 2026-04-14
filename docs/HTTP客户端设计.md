@@ -163,11 +163,21 @@
 
 ### 5.2 左侧栏
 
-左侧栏包含 3 个分组:
+左侧栏包含 3 个标签页:
 
-1. 集合
-2. 收藏
-3. 历史
+1. 记录
+2. 集合
+3. 环境
+
+记录能力:
+
+- 基于最近 `30` 条执行记录展示
+- 底层仍保留每次执行历史, 不做按 URL 覆盖
+- 展示层按请求维度分组, 同一请求多次测试归为一组
+- 组头展示最近一次状态, 耗时, 执行时间和总次数
+- 点击组头恢复该组最近一次执行
+- 展开后可查看该组最近几次执行明细
+- 点击明细可恢复指定历史记录
 
 集合能力:
 
@@ -178,17 +188,11 @@
 - 删除请求
 - 拖拽排序可作为后续增强项, 第一版可不做
 
-历史能力:
+环境能力:
 
-- 按最近访问时间倒序展示
-- 点击可恢复当时请求内容
-- 支持一键重放
-- 支持从历史转为收藏或保存到集合
-
-收藏能力:
-
-- 保存常用请求快捷入口
-- 不额外复制数据, 只保存引用关系
+- 切换当前环境
+- 新建环境
+- 展示当前环境变量数量
 
 ### 5.3 请求编辑区
 
@@ -230,10 +234,13 @@
 Body:
 
 - 文本响应直接展示
-- JSON 响应自动格式化
+- JSON 响应由扩展宿主完成解析和格式化
 - 支持 `Pretty / Raw` 切换
+- Pretty 模式支持 JSON 语法高亮
 - 支持文本搜索
-- 支持复制到剪贴板
+- 复制操作使用内容区右上角图标
+- 复制内容始终以当前展示文本为准
+- 合法 JSON 中的 Unicode 转义必须显示为真实字符, 不允许在前端通过正则做临时解码
 
 Headers:
 
@@ -423,6 +430,48 @@ export interface HttpEnvironmentEntity {
 - 不建议在该文件中存储生产密钥
 - 如确有敏感变量需求, 后续版本引入 `SecretStorage`
 
+### 7.5 响应结果模型
+
+响应结果模型需要同时保留"传输原文"和"展示文本", 避免 UI 为了显示中文或 Pretty JSON 再做二次猜测.
+
+```ts
+export interface HttpResponseResult {
+  requestId: string;
+  recordId: string;
+  status: number;
+  statusText: string;
+  durationMs: number;
+  sizeBytes: number;
+  finalUrl: string;
+  startedAt: string;
+  headers: HttpKeyValue[];
+  unresolvedVariables: string[];
+  isJson: boolean;
+  bodyRawText: string;
+  bodyText: string;
+  bodyPrettyText: string;
+}
+```
+
+字段约束:
+
+- `bodyRawText`
+  - 保存网络返回的原始文本
+  - 用于大小统计, 原始回溯和后续问题排查
+- `bodyText`
+  - 作为 Raw 视图的展示文本
+  - 对合法 JSON, 由宿主执行 `JSON.parse` 后再 `JSON.stringify(parsed)` 生成标准化文本
+- `bodyPrettyText`
+  - 作为 Pretty 视图的展示文本
+  - 对合法 JSON, 由宿主执行 `JSON.stringify(parsed, null, 2)` 生成
+
+这样可以确保:
+
+- 原始传输内容不丢失
+- Raw / Pretty 都基于同一份已解析 JSON
+- `\uXXXX` 在展示层呈现为真实字符
+- Webview 只负责展示, 不承担 JSON 解码和纠错职责
+
 ## 8. 环境变量解析规则
 
 ### 8.1 支持语法
@@ -505,13 +554,33 @@ AbortController + fetch
 
 ### 9.4 响应处理
 
-第一版统一按文本读取响应体, 再根据 `content-type` 决定是否进行 JSON 美化.
+第一版统一按文本读取响应体, 再根据 `content-type` 决定是否进行 JSON 解析和展示标准化.
+
+处理规则:
+
+1. 始终先读取 `bodyRawText`
+2. 若判定为 JSON:
+   - 使用宿主侧 `JSON.parse(bodyRawText)` 解析
+   - `bodyText = JSON.stringify(parsed)`
+   - `bodyPrettyText = JSON.stringify(parsed, null, 2)`
+3. 若不是 JSON:
+   - `bodyText = bodyRawText`
+   - `bodyPrettyText = bodyRawText`
+4. `sizeBytes` 仍基于 `bodyRawText` 计算
+
+设计要求:
+
+- 不在 Webview 里通过字符串替换或正则去解 `\uXXXX`
+- JSON 的 Raw / Pretty 展示必须共享同一宿主解析结果
+- 前端只消费 `HttpResponseResult`, 不重复推断响应编码语义
 
 这样设计的原因:
 
 - 简化实现
 - 降低二进制处理复杂度
 - 覆盖绝大多数接口调试场景
+- 避免 JSON 响应中中文显示异常
+- 避免前端临时兼容逻辑和宿主解析结果不一致
 
 ## 10. 压测设计
 
@@ -844,6 +913,49 @@ interface HttpClientViewState {
 
 这条约束属于稳定性设计, 不是临时调试代码, 后续实现必须保留.
 
+### 15.4 JSON 展示与 Unicode 转义问题
+
+在响应区优化过程中, 出现过以下问题:
+
+- 接口返回的是合法 JSON
+- 原始文本中包含 `\u83b7\u53d6\u6210\u529f` 这类 Unicode 转义
+- 前端若直接展示原始文本, 用户看到的是转义串而不是真实中文
+- 若在 Webview 里用正则替换 `\uXXXX`, 只能覆盖部分场景, 且容易与真实转义语义冲突
+
+最终结论:
+
+- 这不是前端样式问题, 而是响应模型职责边界问题
+- 专业做法应当是"宿主标准化, 前端只展示"
+
+最终解决办法:
+
+1. `HttpResponseResult` 增加 `bodyRawText`, 用于保存网络原始文本
+2. 对合法 JSON, 宿主统一执行 `JSON.parse` 和 `JSON.stringify`
+3. Webview 的 Raw / Pretty 直接读取 `bodyText` 和 `bodyPrettyText`
+4. Pretty 模式额外做只读语法高亮, 但不再负责 Unicode 解码
+5. 复制操作复制当前展示文本, 保证与用户看到的内容一致
+
+这条约束属于响应模型设计原则, 后续不得退回到"前端正则解码 JSON Unicode"方案.
+
+### 15.5 Webview 模板字符串拼接语法问题
+
+在新增响应区复制图标和 JSON 高亮后, 曾出现以下问题:
+
+- `pnpm compile` 和 `pnpm lint` 均通过
+- `pnpm test:http-client` 失败
+- `webview_state.test.ts` 中 `vm.Script` 报错 `Unexpected token ')'`
+
+根因:
+
+- `renderBodyContent()` 中 HTML 字符串拼接末尾残留尾随 `+`
+- 该问题只会在生成后的内联脚本解析阶段暴露, TypeScript 类型检查无法捕获
+
+最终解决办法:
+
+1. 保留 `webview_state.test.ts` 对生成脚本的 `vm.Script` 语法校验
+2. 每次修改 Webview 内联模板后, 必须执行 `pnpm test:http-client`
+3. 将内联脚本语法正确性视为 HTTP Client 的回归验收项
+
 ## 16. 测试设计
 
 根据仓库测试规范, 该模块必须同时提供模块化测试, 流程输出和日志落盘.
@@ -877,6 +989,8 @@ src/http_client/tests/
 - [流程] 正常请求响应解析
 - [流程] 超时取消
 - [流程] JSON 响应格式化
+- [流程] `bodyRawText` 保留原始传输文本
+- [流程] JSON 展示文本标准化后可正确显示中文
 - [流程] Header 透传
 
 `load_runner.test.ts`
@@ -895,6 +1009,7 @@ src/http_client/tests/
 
 - [流程] Webview 脚本文本可被浏览器解释执行
 - [流程] 启动脚本包含 build 和消息处理基础链路
+- [流程] JSON 高亮和响应复制按钮逻辑存在
 
 ### 16.3 日志落盘
 

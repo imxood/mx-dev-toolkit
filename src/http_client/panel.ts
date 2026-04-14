@@ -5,6 +5,7 @@ import { HttpLoadTestRunner } from "./load_runner";
 import { resolveRequest } from "./resolver";
 import { HttpRequestRunner } from "./runner";
 import { HttpClientStore } from "./store";
+import { normalizeToastInput, ToastService } from "../toast/service";
 import {
   ExtensionToWebviewMessage,
   HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS,
@@ -52,12 +53,29 @@ export class HttpClientPanelController implements vscode.Disposable {
   private pendingHostCommand: "send" | "save" | "loadTest" | "focusCurlImport" | null = null;
   private currentWebviewBuildId: string | null = null;
   private responseAckTimer: NodeJS.Timeout | null = null;
+  private readonly toastHostDisposable: { dispose(): void };
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly channel: vscode.OutputChannel,
-    private readonly store: HttpClientStore
-  ) {}
+    private readonly store: HttpClientStore,
+    private readonly toastService: ToastService
+  ) {
+    this.toastHostDisposable = this.toastService.registerHost({
+      id: "httpClient.panel",
+      priority: 100,
+      isAvailable: () => Boolean(this.panel && this.panel.visible && this.currentWebviewBuildId === HTTP_CLIENT_WEBVIEW_BUILD_ID),
+      postToast: async (toast) => {
+        if (!this.panel) {
+          return false;
+        }
+        return this.panel.webview.postMessage({
+          type: "mxToast/show",
+          payload: toast,
+        });
+      },
+    });
+  }
 
   public readonly onDidChangeState = this.stateChangedEmitter.event;
 
@@ -118,6 +136,7 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.clearResponseAckWait();
     this.stopLoadTest();
     this.stateChangedEmitter.dispose();
+    this.toastHostDisposable.dispose();
     this.panel?.dispose();
   }
 
@@ -164,6 +183,22 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   private async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     switch (message.type) {
+      case "mxToast/notify":
+        if (this.panel && this.currentWebviewBuildId === HTTP_CLIENT_WEBVIEW_BUILD_ID) {
+          await this.panel.webview.postMessage({
+            type: "mxToast/show",
+            payload: normalizeToastInput({
+              ...message.payload,
+              source: "http_client.webview",
+            }),
+          });
+          return;
+        }
+        await this.toastService.notify({
+          ...message.payload,
+          source: "http_client.webview",
+        });
+        return;
       case "httpClient/init":
         this.currentWebviewBuildId = message.payload?.buildId ?? null;
         this.channel.appendLine(`[HttpClient] webview init build=${this.currentWebviewBuildId ?? "legacy"}`);

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { HttpClientPanelController } from "./panel";
 import { HttpClientSidebarProvider } from "./sidebar_view";
 import { HttpClientStore } from "./store";
+import { ToastService } from "../toast/service";
 
 const CMD_HTTP_OPEN = "mx-dev-toolkit.httpClient.openWorkbench";
 const CMD_HTTP_SEND = "mx-dev-toolkit.httpClient.sendCurrent";
@@ -11,7 +12,8 @@ const CMD_HTTP_LOAD_TEST = "mx-dev-toolkit.httpClient.runLoadTest";
 
 export function registerHttpClient(
   context: vscode.ExtensionContext,
-  channel: vscode.OutputChannel
+  channel: vscode.OutputChannel,
+  toastService: ToastService
 ): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -20,8 +22,8 @@ export function registerHttpClient(
   }
 
   const store = new HttpClientStore(workspaceRoot, context.workspaceState);
-  const controller = new HttpClientPanelController(context, channel, store);
-  const sidebarProvider = new HttpClientSidebarProvider(controller);
+  const controller = new HttpClientPanelController(context, channel, store, toastService);
+  const sidebarProvider = new HttpClientSidebarProvider(controller, toastService);
 
   context.subscriptions.push(
     controller,

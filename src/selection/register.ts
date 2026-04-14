@@ -1,15 +1,17 @@
 import * as vscode from "vscode";
 import { LineCountStatus } from "./line_count";
 import { PathRangeCopier } from "./copy_path_range";
+import { ToastService } from "../toast/service";
 
 const CMD_COPY_RELATIVE_RANGE = "mx-dev-toolkit.selection.copyRelativeRange";
 const CMD_COPY_ABSOLUTE_RANGE = "mx-dev-toolkit.selection.copyAbsoluteRange";
 
 export function registerSelection(
-  context: vscode.ExtensionContext
+  context: vscode.ExtensionContext,
+  toastService: ToastService
 ): void {
   const lineCountStatus = new LineCountStatus();
-  const pathRangeCopier = new PathRangeCopier();
+  const pathRangeCopier = new PathRangeCopier(toastService);
 
   context.subscriptions.push(
     lineCountStatus,

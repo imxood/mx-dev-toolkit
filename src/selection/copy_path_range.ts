@@ -1,7 +1,10 @@
 import * as path from "path";
 import * as vscode from "vscode";
+import { ToastService } from "../toast/service";
 
 export class PathRangeCopier {
+  constructor(private readonly toastService: ToastService) {}
+
   async copyRelativeRange(): Promise<string | undefined> {
     return this.copyPathRange(false);
   }
@@ -13,19 +16,31 @@ export class PathRangeCopier {
   private async copyPathRange(useAbsolutePath: boolean): Promise<string | undefined> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      vscode.window.showWarningMessage("No active editor found");
+      await this.toastService.notify({
+        kind: "warning",
+        message: "未找到活动编辑器",
+        source: "selection.copyPathRange",
+      });
       return undefined;
     }
 
     const selection = editor.selection;
     if (selection.isEmpty) {
-      vscode.window.showWarningMessage("Please select text first");
+      await this.toastService.notify({
+        kind: "warning",
+        message: "请先选择文本",
+        source: "selection.copyPathRange",
+      });
       return undefined;
     }
 
     const lineRange = this.toLineRange(selection);
     if (!lineRange) {
-      vscode.window.showWarningMessage("Failed to parse selected range");
+      await this.toastService.notify({
+        kind: "warning",
+        message: "无法解析当前选区的行范围",
+        source: "selection.copyPathRange",
+      });
       return undefined;
     }
 
@@ -36,7 +51,11 @@ export class PathRangeCopier {
       const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
       if (!workspaceFolder) {
         filePath = this.normalizePath(editor.document.uri.fsPath);
-        vscode.window.showWarningMessage("File is outside workspace. Fallback to absolute path");
+        await this.toastService.notify({
+          kind: "warning",
+          message: "文件不在工作区内, 已回退为绝对路径",
+          source: "selection.copyPathRange",
+        });
       } else {
         filePath = this.normalizePath(path.relative(workspaceFolder.uri.fsPath, editor.document.uri.fsPath));
       }
@@ -46,7 +65,12 @@ export class PathRangeCopier {
     const text = startLine === endLine ? `${filePath}:${startLine}` : `${filePath}:${startLine}-${endLine}`;
 
     await vscode.env.clipboard.writeText(text);
-    vscode.window.showInformationMessage(`Copied: ${text}`);
+    await this.toastService.notify({
+      kind: "success",
+      message: `已复制: ${text}`,
+      copyText: text,
+      source: "selection.copyPathRange",
+    });
     return text;
   }
 

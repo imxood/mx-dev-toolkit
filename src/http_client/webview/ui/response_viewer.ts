@@ -4,10 +4,7 @@ export function renderResponseViewerShell(): string {
   return `
     <section class="response-viewer panel-surface">
       <div class="panel-title-row">
-        <div>
-          <span class="section-kicker">Response</span>
-          <h2>响应结果</h2>
-        </div>
+        <div><h2>响应结果</h2></div>
         <div id="response-summary" class="response-summary"></div>
       </div>
       <div class="tab-strip" id="response-tabs">

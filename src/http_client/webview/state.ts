@@ -1,3 +1,4 @@
+import { TOAST_HOST_SCRIPT } from "../../toast/webview";
 import { HTTP_CLIENT_WEBVIEW_BUILD_ID, HttpClientViewState } from "../types";
 
 export function createSerializedInitialState(initialState: HttpClientViewState): string {
@@ -15,6 +16,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
         responsePretty: true,
         lastErrorMessage: ""
       };
+      ${TOAST_HOST_SCRIPT}
 
       const requestTabNames = ["params", "headers", "body"];
       const responseTabNames = ["body", "headers", "meta", "loadTest"];
@@ -84,7 +86,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
         } catch (error) {
           reportFrontendLog("error", scope, error);
           state.requestRunning = false;
-          setBanner("界面渲染失败, 请查看 OUTPUT 日志", "warning");
+          setBanner("界面渲染失败, 请查看 OUTPUT 日志", "error", { timeoutMs: 4200 });
           const sendButton = document.getElementById("send-button");
           if (sendButton) {
             sendButton.textContent = "发送";
@@ -93,13 +95,27 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
         }
       }
 
-      function setBanner(message, kind) {
-        const banner = document.getElementById("message-banner");
-        if (!banner) {
+      function setBanner(message, kind, options) {
+        if (!message) {
           return;
         }
-        banner.textContent = message || "";
-        banner.className = "message-banner" + (message ? " " + (kind || "info") : "");
+        const toastPayload = {
+          id: "local-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+          kind: kind || "info",
+          message: message,
+          copyText: options && typeof options.copyText === "string" ? options.copyText : message,
+          durationMs: options && typeof options.timeoutMs === "number" ? options.timeoutMs : undefined
+        };
+        if (window.__mxToastCenter && typeof window.__mxToastCenter.push === "function") {
+          window.__mxToastCenter.push(toastPayload);
+          return;
+        }
+        postMessage("mxToast/notify", {
+          message: toastPayload.message,
+          kind: toastPayload.kind,
+          copyText: toastPayload.copyText,
+          durationMs: toastPayload.durationMs
+        });
       }
 
       function buildUrlHint(rawUrl) {
@@ -120,6 +136,44 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
           return "URL 格式不正确, 例如 https://example.com/api";
         }
         return "";
+      }
+
+      function getDisplayedResponseText() {
+        if (!state.response) {
+          return "";
+        }
+        return uiState.responsePretty && state.response.isJson ? state.response.bodyPrettyText : state.response.bodyText;
+      }
+
+      function classifyJsonToken(token) {
+        if (/^"/.test(token)) {
+          return token.endsWith(":") ? "json-key" : "json-string";
+        }
+        if (token === "true" || token === "false") {
+          return "json-boolean";
+        }
+        if (token === "null") {
+          return "json-null";
+        }
+        return "json-number";
+      }
+
+      function renderJsonHighlightedText(source, keyword) {
+        const tokenPattern = /"(?:\\\\.|[^"\\\\])*"(?=\\s*:)|"(?:\\\\.|[^"\\\\])*"|true|false|null|-?\\d+(?:\\.\\d+)?(?:[eE][+\\-]?\\d+)?/g;
+        let lastIndex = 0;
+        let result = "";
+        let match = tokenPattern.exec(source);
+        while (match) {
+          result += highlightText(source.slice(lastIndex, match.index), keyword);
+          const token = match[0];
+          const tokenEndIndex = match.index + token.length;
+          const isKey = source.slice(tokenEndIndex).match(/^\\s*:/) !== null;
+          result += '<span class="json-token ' + classifyJsonToken(isKey ? token + ":" : token) + '">' + highlightText(token, keyword) + "</span>";
+          lastIndex = tokenPattern.lastIndex;
+          match = tokenPattern.exec(source);
+        }
+        result += highlightText(source.slice(lastIndex), keyword);
+        return result;
       }
 
       function ensureDraft() {
@@ -470,14 +524,26 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
       }
 
       function renderBodyContent() {
-        const responseText = uiState.responsePretty && state.response.isJson ? state.response.bodyPrettyText : state.response.bodyText;
+        const responseText = getDisplayedResponseText();
+        const responseHtml = uiState.responsePretty && state.response.isJson
+          ? renderJsonHighlightedText(responseText, uiState.responseSearch)
+          : highlightText(responseText, uiState.responseSearch);
         return (
-          '<div class="response-tools">' +
-            '<input id="response-search-input" type="text" class="response-search-input" placeholder="搜索响应内容" value="' + escapeHtml(uiState.responseSearch) + '" />' +
-            '<button id="response-toggle-mode" class="ghost-button" type="button">' + (uiState.responsePretty ? "切换 Raw" : "切换 Pretty") + "</button>" +
-            '<button id="copy-response-button" class="ghost-button" type="button">复制响应</button>' +
-          "</div>" +
-          '<pre class="response-code">' + highlightText(responseText, uiState.responseSearch) + "</pre>"
+          '<div class="response-body-panel">' +
+            '<div class="response-tools">' +
+              '<input id="response-search-input" type="text" class="response-search-input" placeholder="搜索响应内容" value="' + escapeHtml(uiState.responseSearch) + '" />' +
+              '<button id="response-toggle-mode" class="ghost-button" type="button">' + (uiState.responsePretty ? "切换 Raw" : "切换 Pretty") + "</button>" +
+            "</div>" +
+            '<div class="response-code-shell">' +
+              '<button class="icon-button copy-response-button" data-action="copy-response" type="button" title="复制响应内容" aria-label="复制响应内容">' +
+                '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
+                  '<path d="M5.5 2.5h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm0 1a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-6Z" fill="currentColor"></path>' +
+                  '<path d="M3 4.5H2.5A1.5 1.5 0 0 0 1 6v6.5A1.5 1.5 0 0 0 2.5 14H9v-1H2.5a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5H3v-1Z" fill="currentColor"></path>' +
+                "</svg>" +
+              "</button>" +
+              '<pre class="response-code' + (uiState.responsePretty && state.response.isJson ? " json-highlight" : "") + '">' + responseHtml + "</pre>" +
+            "</div>" +
+          "</div>"
         );
       }
 
@@ -624,7 +690,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
       function performSend() {
         if (state.requestRunning) {
           postMessage("httpClient/cancelRequest");
-          setBanner("正在取消请求...", "warning");
+          setBanner("正在取消请求...", "warning", { timeoutMs: 2200 });
           return;
         }
         const draft = ensureDraft();
@@ -655,7 +721,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
         renderToolbar();
         renderResponseSummary();
         renderResponseContent();
-        setBanner("正在发送请求...", "info");
+        setBanner("正在发送请求...", "info", { timeoutMs: 2200 });
         postMessage("httpClient/send", {
           request: draft,
           environmentId: state.activeEnvironmentId,
@@ -696,7 +762,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
 
       function installListeners() {
         document.addEventListener("click", function(event) {
-          const target = event.target instanceof HTMLElement ? event.target : null;
+          const target = event.target instanceof Element ? event.target : null;
           if (!target) {
             return;
           }
@@ -758,7 +824,13 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
           }
           if (action === "copy-header-value") {
             navigator.clipboard.writeText(decodeURIComponent(actionTarget.getAttribute("data-header-value") || "")).then(function() {
-              setBanner("Header 值已复制", "success");
+              setBanner("已复制 Header", "success");
+            });
+            return;
+          }
+          if (action === "copy-response") {
+            navigator.clipboard.writeText(getDisplayedResponseText()).then(function() {
+              setBanner("已复制响应内容", "success");
             });
             return;
           }
@@ -912,16 +984,7 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
 
         document.addEventListener("click", function(event) {
           const target = event.target;
-          if (!(target instanceof HTMLElement)) {
-            return;
-          }
-          if (target.id === "copy-response-button") {
-            const responseText = uiState.responsePretty && state.response && state.response.isJson
-              ? state.response.bodyPrettyText
-              : state.response ? state.response.bodyText : "";
-            navigator.clipboard.writeText(responseText).then(function() {
-              setBanner("响应体已复制到剪贴板", "success");
-            });
+          if (!(target instanceof Element)) {
             return;
           }
           if (target.id === "response-toggle-mode") {
@@ -959,6 +1022,10 @@ export function getWebviewScript(initialState: HttpClientViewState): string {
         safeRun("message.dispatch", function() {
           const message = event.data;
           if (!message || typeof message.type !== "string") {
+            return;
+          }
+          if (message.type === "mxToast/show") {
+            window.__mxToastCenter.push(message.payload);
             return;
           }
           if (message.type === "httpClient/state") {

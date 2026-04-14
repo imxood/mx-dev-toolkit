@@ -26,26 +26,27 @@ export class HttpRequestRunner {
         init.body = request.bodyText;
       }
       const response = await fetch(request.url, init);
-      const bodyText = await response.text();
+      const bodyRawText = await response.text();
       const durationMs = Date.now() - startedMs;
       const headers = Array.from(response.headers.entries()).map(([key, value]) => ({
         key,
         value,
       }));
-      const { isJson, prettyText } = safePrettyJson(bodyText);
+      const { isJson, displayText, prettyText } = safePrettyJson(bodyRawText);
       const contentType = response.headers.get("content-type") ?? "";
       return {
         ok: response.ok,
         status: response.status,
         statusText: response.statusText,
-        bodyText,
-        bodyPrettyText: isJson ? prettyText : bodyText,
+        bodyRawText,
+        bodyText: displayText,
+        bodyPrettyText: prettyText,
         isJson,
         headers,
         meta: {
           startedAt,
           durationMs,
-          sizeBytes: Buffer.byteLength(bodyText, "utf8"),
+          sizeBytes: Buffer.byteLength(bodyRawText, "utf8"),
           finalUrl: response.url || request.url,
           redirected: response.redirected,
           contentType,

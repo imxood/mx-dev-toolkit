@@ -1,3 +1,5 @@
+import { TOAST_HOST_STYLES } from "../../toast/webview";
+
 export const HTTP_CLIENT_STYLES = `
   :root {
     color-scheme: light dark;
@@ -22,6 +24,11 @@ export const HTTP_CLIENT_STYLES = `
     --success: #73c991;
     --warning: #d7ba7d;
     --danger: #f48771;
+    --json-key: #9cdcfe;
+    --json-string: #ce9178;
+    --json-number: #b5cea8;
+    --json-boolean: #569cd6;
+    --json-null: #c586c0;
     --radius: 4px;
     --space-1: 4px;
     --space-2: 6px;
@@ -77,7 +84,7 @@ export const HTTP_CLIENT_STYLES = `
 
   .editor-shell {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-3);
     min-width: 0;
     min-height: 0;
@@ -432,6 +439,19 @@ export const HTTP_CLIENT_STYLES = `
     max-width: 240px;
   }
 
+  .response-body-panel,
+  .response-code-shell {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-height: 0;
+    flex: 1;
+  }
+
+  .response-code-shell {
+    position: relative;
+  }
+
   .response-code {
     margin: 0;
     min-height: 220px;
@@ -458,7 +478,55 @@ export const HTTP_CLIENT_STYLES = `
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.04em;
+  }
+
+  .method-pill {
     text-transform: uppercase;
+  }
+
+  .copy-response-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    width: 26px;
+    min-width: 26px;
+    height: 26px;
+    border-color: var(--border-soft);
+    background: var(--surface);
+    color: var(--muted);
+  }
+
+  .copy-response-button:hover {
+    color: var(--text);
+  }
+
+  .copy-response-button svg {
+    display: block;
+  }
+
+  .json-highlight {
+    padding-top: 42px;
+  }
+
+  .json-token.json-key {
+    color: var(--json-key);
+  }
+
+  .json-token.json-string {
+    color: var(--json-string);
+  }
+
+  .json-token.json-number {
+    color: var(--json-number);
+  }
+
+  .json-token.json-boolean {
+    color: var(--json-boolean);
+  }
+
+  .json-token.json-null {
+    color: var(--json-null);
   }
 
   .method-get {
@@ -584,21 +652,6 @@ export const HTTP_CLIENT_STYLES = `
     background: rgba(244, 135, 113, 0.08);
   }
 
-  .message-banner {
-    min-height: 18px;
-    padding: 0 2px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .message-banner.success {
-    color: var(--success);
-  }
-
-  .message-banner.warning {
-    color: var(--warning);
-  }
-
   .empty-panel,
   .empty-state {
     padding: var(--space-5);
@@ -641,6 +694,8 @@ export const HTTP_CLIENT_STYLES = `
     background: rgba(215, 186, 125, 0.25);
     color: inherit;
   }
+
+  ${TOAST_HOST_STYLES}
 
   @media (max-width: 1200px) {
     .app-shell {
