@@ -1,6 +1,6 @@
 # Mx Dev Toolkit 文档入口
 
-最后更新: 2026-04-13
+最后更新: 2026-04-14
 
 ## 1. 使用说明
 
@@ -46,9 +46,21 @@
   - 状态: 设计
   - 说明: 插件级统一 Toast 能力的正式设计事实源, 包括宿主路由, Webview ToastCenter, 定时器规则和原生回退策略.
 
-## 5. 当前结论
+## 5. 未来规划
 
-截至 2026-04-14, HTTP Client 已完成 MVP 实现并进入稳定性收口阶段, 插件级统一 Toast 进入实施阶段. 当前文档中的重要稳定性结论包括:
+### 5.1 Webview 技术栈迁移
+
+- [未来规划/README.md](./未来规划/README.md)
+  - 状态: 规划
+  - 说明: 未落地方案目录入口.
+
+- [未来规划/HTTP客户端Webview React化迁移设计.md](./未来规划/HTTP客户端Webview%20React化迁移设计.md)
+  - 状态: 规划
+  - 说明: 在保持当前功能和 UI 完全一致的前提下, 将 HTTP Client Webview 迁移到 `React + TailwindCSS + TypeScript` 的实施设计.
+
+## 6. 当前结论
+
+截至 2026-04-14, HTTP Client 已完成 MVP 实现并进入稳定性收口阶段, 插件级统一 Toast 已完成落地. 当前文档中的重要稳定性结论包括:
 
 - Webview 必须通过 `buildId` 检测旧实例.
 - Webview 渲染响应后必须回传 `responseAck`.
