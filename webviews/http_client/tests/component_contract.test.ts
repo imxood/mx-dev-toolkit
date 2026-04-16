@@ -91,7 +91,7 @@ test("component_contract: 工作台压测按钮与响应区保持正确接线", 
   assert.equal(openEditorButton.props.className, "ghost-button");
   invokeClick(openEditorButton);
   assert.equal(openResponseEditorCalls, 1);
-  const responseCode = findElement(responseTree, (element) => element.props.className === "response-code");
+  const responseCode = findElement(responseTree, (element) => element.props.className === "response-code response-code-raw");
   const html = (responseCode.props.dangerouslySetInnerHTML as { __html: string }).__html;
   assert.match(String(html), /<mark>成功<\/mark>/);
 

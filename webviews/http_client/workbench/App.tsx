@@ -445,19 +445,19 @@ function renderResponseTab(controller: WorkbenchController): React.ReactElement 
         <button id="response-toggle-mode" className="ghost-button" type="button" onClick={controller.toggleResponsePretty}>
           {uiState.responsePretty ? "切换 Raw" : "切换 原文"}
         </button>
-      </div>
-      <div className="response-code-shell">
-        <button className="icon-button copy-response-button" type="button" title="复制响应内容" aria-label="复制响应内容" onClick={() => void controller.copyResponse()}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-            <path d="M5.5 2.5h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm0 1a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-6Z" fill="currentColor" />
+        </div>
+        <div className="response-code-shell">
+          <button className="icon-button copy-response-button" type="button" title="复制响应内容" aria-label="复制响应内容" onClick={() => void controller.copyResponse()}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+              <path d="M5.5 2.5h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm0 1a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-6Z" fill="currentColor" />
             <path d="M3 4.5H2.5A1.5 1.5 0 0 0 1 6v6.5A1.5 1.5 0 0 0 2.5 14H9v-1H2.5a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5H3v-1Z" fill="currentColor" />
           </svg>
-        </button>
-        <pre
-          className="response-code"
-          dangerouslySetInnerHTML={{ __html: controller.highlightedResponseHtml }}
-        />
+          </button>
+          <pre
+            className={`response-code${uiState.responsePretty ? "" : " response-code-raw"}`}
+            dangerouslySetInnerHTML={{ __html: controller.highlightedResponseHtml }}
+          />
+        </div>
       </div>
-    </div>
   );
 }
