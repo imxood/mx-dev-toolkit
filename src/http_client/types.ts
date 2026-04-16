@@ -272,6 +272,7 @@ export type WebviewToExtensionMessage =
   | { type: "httpClient/saveEnvironment"; payload: { environment: HttpEnvironmentEntity } }
   | { type: "httpClient/deleteEnvironment"; payload: { environmentId: string } }
   | { type: "httpClient/selectHistory"; payload: { historyId: string } }
+  | { type: "httpClient/openResponseEditor"; payload: { content: string; language: string } }
   | { type: "httpClient/loadTest/start"; payload: HttpClientLoadTestPayload }
   | { type: "httpClient/loadTest/stop" }
   | { type: "httpClient/responseAck"; payload: HttpClientResponseAckPayload }

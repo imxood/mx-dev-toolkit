@@ -1,28 +1,61 @@
-import React from "react";
-import { useWorkbenchController } from "./useWorkbenchController";
+import React, { useState } from "react";
+import { SidebarSurface } from "../sidebar/SidebarApp";
+import { getSelectedHistoryOrdinal, isScratchDraft } from "../shared/workbench_model";
+import { type WorkbenchController, useWorkbenchController } from "./useWorkbenchController";
 
 export function App(): React.ReactElement {
   const controller = useWorkbenchController();
+  const [helpOpen, setHelpOpen] = useState(false);
+  return <AppView controller={controller} helpOpen={helpOpen} onOpenHelp={() => setHelpOpen(true)} onCloseHelp={() => setHelpOpen(false)} />;
+}
+
+export function AppView({
+  controller,
+  helpOpen = false,
+  onOpenHelp,
+  onCloseHelp,
+}: {
+  controller: WorkbenchController;
+  helpOpen?: boolean;
+  onOpenHelp?: () => void;
+  onCloseHelp?: () => void;
+}): React.ReactElement {
   const { viewState, uiState } = controller;
   const draft = viewState.draft;
   const response = viewState.response;
   const responseSummaryKind = !response ? "neutral" : response.ok ? "success" : "warning";
+  const loadTestRunning = Boolean(viewState.loadTestProgress?.running);
+  const scratchDraft = isScratchDraft(viewState);
+  const selectedHistoryOrdinal = getSelectedHistoryOrdinal(viewState.history, viewState.selectedHistoryId);
+  const draftCollection = draft?.collectionId ? viewState.config.collections.find((collection) => collection.id === draft.collectionId) ?? null : null;
+  const leftContextText = selectedHistoryOrdinal ? `记录 #${selectedHistoryOrdinal}` : !selectedHistoryOrdinal && scratchDraft ? "新建草稿" : "";
+  const requestBannerKind = selectedHistoryOrdinal ? "history" : scratchDraft ? "draft" : draft ? "active" : "empty";
+  const requestBannerText = draft ? draft.name : "请选择请求";
 
   return (
     <div className="app-shell" data-build-id={controller.buildId} data-host-state={controller.hasHostState ? "ready" : "fallback"}>
+      <aside className="sidebar-pane panel-surface">
+        <SidebarSurface controller={controller} />
+      </aside>
+
       <main className="editor-shell">
-        <section className="http-toolbar">
-          <div className="toolbar-heading">
-            <div className="toolbar-heading-copy">
-              <span className="section-kicker">Editor</span>
-              <div className="toolbar-title-row">
-                <h2>请求编辑</h2>
-                <span className="toolbar-shortcut">Ctrl+Enter 发送</span>
-              </div>
+        <section className={`http-toolbar${scratchDraft ? " context-new" : ""}${selectedHistoryOrdinal ? " context-history" : ""}`}>
+          <div className="toolbar-heading toolbar-heading-balanced">
+            <div className="toolbar-side toolbar-side-left">
+              {leftContextText ? (
+                <span className={`request-context-pill${selectedHistoryOrdinal ? " request-context-pill-history" : " request-context-pill-draft"}`}>
+                  {leftContextText}
+                </span>
+              ) : (
+                <span className="toolbar-side-placeholder" aria-hidden="true" />
+              )}
             </div>
-            <div className="toolbar-meta">
+            <div className="toolbar-center-slot">
+              <span className={`request-name-banner request-name-banner-${requestBannerKind}`}>{requestBannerText}</span>
+            </div>
+            <div className="toolbar-side toolbar-side-right">
+              {draftCollection ? <span className="toolbar-meta-chip">{draftCollection.name}</span> : null}
               <span className={`dirty-indicator${viewState.dirty ? " dirty" : ""}`}>{viewState.dirty ? "未保存" : "已同步"}</span>
-              <span className="request-hint">{draft ? draft.name : "请选择请求或新建请求"}</span>
             </div>
           </div>
           <div className="toolbar-main">
@@ -58,8 +91,8 @@ export function App(): React.ReactElement {
             <button id="send-button" className="primary-button" type="button" onClick={controller.performSend}>
               {viewState.requestRunning ? "取消" : "发送"}
             </button>
-            <button id="load-test-button" className="secondary-button" type="button" onClick={() => controller.setResponseTab("loadTest")}>
-              压测
+            <button id="load-test-button" className="secondary-button" type="button" onClick={loadTestRunning ? controller.stopLoadTest : controller.performLoadTest}>
+              {loadTestRunning ? "停止" : "压测"}
             </button>
             <button id="save-button" className="secondary-button" type="button" onClick={controller.performSave}>
               保存
@@ -67,13 +100,15 @@ export function App(): React.ReactElement {
             <button id="import-curl-button" className="ghost-button" type="button" onClick={controller.importCurl}>
               导入 cURL
             </button>
+            <button className="ghost-button toolbar-help-button" type="button" title="使用说明" onClick={onOpenHelp}>
+              说明
+            </button>
           </div>
         </section>
 
         <section className="request-editor panel-surface">
           <div className="panel-title-row">
             <div>
-              <span className="section-kicker">Request</span>
               <h2>请求配置</h2>
             </div>
             <div className="tab-strip" id="request-tabs">
@@ -91,6 +126,8 @@ export function App(): React.ReactElement {
 
           <div className="request-content">{draft ? renderRequestTab(viewState.activeTab, draft, controller) : <div className="empty-panel">请选择左侧请求或点击新建请求</div>}</div>
         </section>
+
+        {helpOpen ? <HelpDialog onClose={onCloseHelp} /> : null}
       </main>
 
       <section className="response-viewer panel-surface">
@@ -134,10 +171,54 @@ export function App(): React.ReactElement {
   );
 }
 
+function HelpDialog({ onClose }: { onClose?: () => void }): React.ReactElement {
+  return (
+    <div className="help-dialog-layer" onClick={onClose}>
+      <div className="help-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="help-dialog-head">
+          <div>
+            <h3>HTTP Client 使用说明</h3>
+            <p>当前界面采用三列工作台. 左侧选择, 中间编辑, 右侧查看结果.</p>
+          </div>
+          <button className="icon-button help-dialog-close" type="button" title="关闭" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="help-dialog-grid">
+          <section className="help-card">
+            <h4>常用流程</h4>
+            <ul>
+              <li>左侧点击请求, 中间直接编辑 URL, Header, Body.</li>
+              <li>点击 `发送` 执行真实 HTTP 请求.</li>
+              <li>需要复用请求时, 右键 `集合` 或请求项进行新建、复制、重命名、删除.</li>
+              <li>环境变量在 `环境` 页编辑, 右键可保存环境、删除环境、新增变量.</li>
+            </ul>
+          </section>
+          <section className="help-card">
+            <h4>快捷键</h4>
+            <ul>
+              <li>`Ctrl/Cmd + Enter`: 发送请求</li>
+              <li>`Ctrl/Cmd + S`: 保存当前请求</li>
+            </ul>
+          </section>
+          <section className="help-card">
+            <h4>右键菜单</h4>
+            <ul>
+              <li>`记录`: 打开最近记录, 复制 URL.</li>
+              <li>`集合`: 新建请求, 新建集合, 请求收藏与复制.</li>
+              <li>`环境`: 切换环境, 保存环境, 删除环境, 管理变量.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function renderRequestTab(
   activeTab: "params" | "headers" | "body",
-  draft: NonNullable<ReturnType<typeof useWorkbenchController>["viewState"]["draft"]>,
-  controller: ReturnType<typeof useWorkbenchController>
+  draft: NonNullable<WorkbenchController["viewState"]["draft"]>,
+  controller: WorkbenchController
 ): React.ReactElement {
   if (activeTab === "params") {
     return renderKeyValueEditor("params", draft.params, "添加参数", controller);
@@ -179,7 +260,7 @@ function renderKeyValueEditor(
   section: "params" | "headers",
   items: Array<{ id: string; key: string; value: string; enabled: boolean }>,
   actionText: string,
-  controller: ReturnType<typeof useWorkbenchController>
+  controller: WorkbenchController
 ): React.ReactElement {
   return (
     <div className="kv-editor">
@@ -208,7 +289,7 @@ function renderKeyValueEditor(
   );
 }
 
-function renderResponseTab(controller: ReturnType<typeof useWorkbenchController>): React.ReactElement {
+function renderResponseTab(controller: WorkbenchController): React.ReactElement {
   const { viewState, uiState } = controller;
   const response = viewState.response;
 
@@ -358,8 +439,11 @@ function renderResponseTab(controller: ReturnType<typeof useWorkbenchController>
           value={uiState.responseSearch}
           onChange={(event) => controller.setResponseSearch(event.target.value)}
         />
+        <button id="response-open-editor" className="ghost-button" type="button" onClick={controller.openResponseEditor}>
+          编辑
+        </button>
         <button id="response-toggle-mode" className="ghost-button" type="button" onClick={controller.toggleResponsePretty}>
-          {uiState.responsePretty ? "切换 Raw" : "切换 Pretty"}
+          {uiState.responsePretty ? "切换 Raw" : "切换 原文"}
         </button>
       </div>
       <div className="response-code-shell">
@@ -369,11 +453,10 @@ function renderResponseTab(controller: ReturnType<typeof useWorkbenchController>
             <path d="M3 4.5H2.5A1.5 1.5 0 0 0 1 6v6.5A1.5 1.5 0 0 0 2.5 14H9v-1H2.5a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5H3v-1Z" fill="currentColor" />
           </svg>
         </button>
-        {uiState.responsePretty && response.isJson ? (
-          <pre className="response-code json-highlight" dangerouslySetInnerHTML={{ __html: controller.highlightedResponseHtml }} />
-        ) : (
-          <pre className="response-code">{controller.displayedResponseText}</pre>
-        )}
+        <pre
+          className="response-code"
+          dangerouslySetInnerHTML={{ __html: controller.highlightedResponseHtml }}
+        />
       </div>
     </div>
   );

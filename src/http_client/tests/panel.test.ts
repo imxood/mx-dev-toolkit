@@ -67,6 +67,7 @@ test("panel: 响应结果应先回推到界面, 历史记录异步持久化", as
       selectedHistoryId: null,
       activeEnvironmentId: null,
     }),
+    getActiveRequestId: () => request.id,
     setActiveRequestId: async () => undefined,
     saveDraft: async () => undefined,
     saveScratchDraft: async () => undefined,
@@ -182,6 +183,7 @@ test("panel: webview 未确认响应时应自动重载并按当前状态恢复�
       selectedHistoryId: null,
       activeEnvironmentId: null,
     }),
+    getActiveRequestId: () => request.id,
     setActiveRequestId: async () => undefined,
     saveDraft: async () => undefined,
     saveScratchDraft: async () => undefined,
@@ -284,6 +286,7 @@ test("panel: cURL 导入失败后应保留原文并允许重新编辑", async ()
         selectedHistoryId: null,
         activeEnvironmentId: null,
       }),
+      getActiveRequestId: () => null,
       setActiveRequestId: async () => undefined,
       saveDraft: async () => undefined,
       saveScratchDraft: async (draft: { id: string; url: string }) => {
@@ -330,6 +333,7 @@ test("panel: workbench init 应复用 bootstrap snapshot, 不重复回推整包�
         activeRequestId: request.id,
         activeEnvironmentId: null,
       }),
+      getActiveRequestId: () => request.id,
       getDraft: () => ({
         draft: null,
         dirty: false,
@@ -371,7 +375,7 @@ test("panel: workbench init 应复用 bootstrap snapshot, 不重复回推整包�
 
 test("panel: 选择请求消息只更新 Host 会话态, 不再全量回推 state", async () => {
   const logger = await createTestLogger("http_client_panel.txt");
-  await logger.flow("验证 selectRequest 属于 local-first 热路径, Host 只更新内部状态并持久化");
+  await logger.flow("验证 selectRequest 属于 local-first 热路径, Host 只更新内部状态并在后台延迟持久化 stable request");
 
   const HttpClientPanelController = loadPanelController();
   const config = createDefaultConfigFile();
@@ -381,18 +385,23 @@ test("panel: 选择请求消息只更新 Host 会话态, 不再全量回推 stat
 
   const messages: ExtensionToWebviewMessage[] = [];
   const activeRequestIds: Array<string | null> = [];
+  let loadSnapshotCalls = 0;
 
   const controller = new HttpClientPanelController(
     { subscriptions: [] } as never,
     { appendLine: () => undefined } as never,
     {
       ensureInitialized: async () => config,
-      loadSnapshot: async () => ({
-        config,
-        history: [],
-        activeRequestId: requestA.id,
-        activeEnvironmentId: null,
-      }),
+      loadSnapshot: async () => {
+        loadSnapshotCalls += 1;
+        return {
+          config,
+          history: [],
+          activeRequestId: requestA.id,
+          activeEnvironmentId: null,
+        };
+      },
+      getActiveRequestId: () => requestA.id,
       getDraft: () => ({
         draft: null,
         dirty: false,
@@ -430,10 +439,249 @@ test("panel: 选择请求消息只更新 Host 会话态, 不再全量回推 stat
 
   await logger.verify(`selectRequest 后消息数: ${messages.length}`);
   assert.equal(messages.length, 0);
-  assert.deepEqual(activeRequestIds, [requestB.id]);
   assert.equal((controller as unknown as { currentDraft: { id: string } | null }).currentDraft?.id, requestB.id);
+  assert.equal(loadSnapshotCalls, 0);
+  assert.deepEqual(activeRequestIds, []);
 
-  await logger.conclusion("selectRequest 已从全量 postState 改为 local-first, Host 不再回推整包状态");
+  await logger.step("等待后台去抖持久化, 应只写最后一次 stable request");
+  await waitUntil(() => activeRequestIds.length === 1, 1200);
+  assert.deepEqual(activeRequestIds, [requestB.id]);
+
+  await logger.conclusion("selectRequest 已保持 local-first 热路径, activeRequestId 仅在后台 quiet period 后写入一次");
+});
+
+test("panel: 选择历史消息只更新 Host 会话态, 不再构建整包 viewState", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证 selectHistory 热路径下, Host 不再执行 buildViewState/postState, 且浏览历史不会改写 activeRequestId");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const request = createDefaultRequest("历史请求", config.collections[0].id);
+  const history = {
+    id: "history-1",
+    request,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: 200,
+      statusText: "OK",
+      durationMs: 18,
+      ok: true,
+      sizeBytes: 64,
+    },
+  };
+
+  const messages: ExtensionToWebviewMessage[] = [];
+  const activeRequestIds: Array<string | null> = [];
+  let loadSnapshotCalls = 0;
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => {
+        loadSnapshotCalls += 1;
+        return {
+          config,
+          history: [history],
+          activeRequestId: null,
+          activeEnvironmentId: null,
+        };
+      },
+      getActiveRequestId: () => null,
+      getHistoryItem: (historyId: string) => (historyId === history.id ? history : null),
+      setActiveRequestId: async (requestId: string | null) => {
+        activeRequestIds.push(requestId);
+      },
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  (controller as unknown as { panel: unknown }).panel = {
+    webview: {
+      postMessage: async (message: ExtensionToWebviewMessage) => {
+        messages.push(message);
+        return true;
+      },
+    },
+  };
+
+  await logger.step("触发 selectHistory, Host 应只更新 currentDraft 和 activeRequestId");
+  await (
+    controller as unknown as {
+      handleMessage: (message: { type: "httpClient/selectHistory"; payload: { historyId: string } }) => Promise<void>;
+    }
+  ).handleMessage({
+    type: "httpClient/selectHistory",
+    payload: { historyId: history.id },
+  });
+
+  await logger.verify(`selectHistory 后快照构建次数: ${loadSnapshotCalls}`);
+  assert.equal(messages.length, 0);
+  assert.equal((controller as unknown as { currentDraft: { id: string } | null }).currentDraft?.id, request.id);
+  assert.equal((controller as unknown as { selectedHistoryId: string | null }).selectedHistoryId, history.id);
+  assert.equal(loadSnapshotCalls, 0);
+  assert.deepEqual(activeRequestIds, []);
+
+  await logger.step("等待一个完整 quiet period, 浏览历史本身不应触发 activeRequestId 持久化");
+  await delay(800);
+  assert.deepEqual(activeRequestIds, []);
+
+  await logger.conclusion("selectHistory 已保持 local-first 热路径, 历史浏览不再改写持久化锚点");
+});
+
+test("panel: 浏览历史后只有继续编辑草稿才会后台刷新 activeRequestId", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证历史浏览与稳定请求持久化解耦, 只有基于历史继续编辑时才会在后台刷新 activeRequestId");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const requestA = createDefaultRequest("请求 A", config.collections[0].id);
+  const requestB = createDefaultRequest("请求 B", config.collections[0].id);
+  config.requests.push(requestA, requestB);
+  const history = {
+    id: "history-1",
+    request: requestB,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: 200,
+      statusText: "OK",
+      durationMs: 18,
+      ok: true,
+      sizeBytes: 64,
+    },
+  };
+
+  const activeRequestIds: Array<string | null> = [];
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => ({
+        config,
+        history: [history],
+        activeRequestId: requestA.id,
+        activeEnvironmentId: null,
+      }),
+      getActiveRequestId: () => requestA.id,
+      getHistoryItem: (historyId: string) => (historyId === history.id ? history : null),
+      getDraft: () => ({
+        draft: null,
+        dirty: false,
+      }),
+      getScratchDraft: () => null,
+      setActiveRequestId: async (requestId: string | null) => {
+        activeRequestIds.push(requestId);
+      },
+      saveDraft: async () => undefined,
+      saveScratchDraft: async () => undefined,
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  await logger.step("先浏览历史, 不应立即改写 activeRequestId");
+  await (
+    controller as unknown as {
+      handleMessage: (message: { type: "httpClient/selectHistory"; payload: { historyId: string } }) => Promise<void>;
+    }
+  ).handleMessage({
+    type: "httpClient/selectHistory",
+    payload: { historyId: history.id },
+  });
+  await delay(800);
+  assert.deepEqual(activeRequestIds, []);
+
+  await logger.step("继续编辑历史派生草稿后, activeRequestId 才应在后台刷新");
+  await (
+    controller as unknown as {
+      handleDraftChanged: (request: typeof requestB, dirty: boolean) => Promise<void>;
+    }
+  ).handleDraftChanged({
+    ...requestB,
+    url: "https://api.example.com/history-replay",
+  }, true);
+
+  await waitUntil(() => activeRequestIds.length === 1, 1200);
+  assert.deepEqual(activeRequestIds, [requestB.id]);
+
+  await logger.conclusion("历史浏览已不再触发持久化, 只有进入稳定编辑态才会后台刷新请求锚点");
+});
+
+test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证工作台点击编辑响应后, Host 会在 VS Code 中打开一个新的临时文档");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const openedDocuments: Array<{ content: string; language: string }> = [];
+  const shownDocuments: Array<{ document: unknown; options: unknown }> = [];
+
+  setMockOpenTextDocument(async (options: { content: string; language: string }) => {
+    openedDocuments.push(options);
+    return {
+      uri: "untitled:test-response",
+      ...options,
+    };
+  });
+  setMockShowTextDocument(async (document: unknown, options?: unknown) => {
+    shownDocuments.push({ document, options });
+  });
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => ({
+        config,
+        history: [],
+        activeRequestId: null,
+        selectedHistoryId: null,
+        activeEnvironmentId: null,
+      }),
+      getActiveRequestId: () => null,
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  await logger.step("发送 openResponseEditor 消息, Host 应打开新文档并展示");
+  await (
+    controller as unknown as {
+      handleMessage: (message: { type: "httpClient/openResponseEditor"; payload: { content: string; language: string } }) => Promise<void>;
+    }
+  ).handleMessage({
+    type: "httpClient/openResponseEditor",
+    payload: {
+      content: "{\\\"ok\\\":true}",
+      language: "plaintext",
+    },
+  });
+
+  await logger.verify(`openTextDocument 调用次数: ${openedDocuments.length}`);
+  assert.deepEqual(openedDocuments, [{ content: "{\\\"ok\\\":true}", language: "plaintext" }]);
+  assert.equal(shownDocuments.length, 1);
+  assert.deepEqual(shownDocuments[0].options, {
+    preview: false,
+    viewColumn: 2,
+  });
+
+  setMockOpenTextDocument(async (options: { content: string; language: string }) => ({
+    uri: "untitled:default",
+    ...options,
+  }));
+  setMockShowTextDocument(async () => undefined);
+
+  await logger.conclusion("编辑响应会打开 VS Code 临时文档, 不依赖 Webview 内置编辑器");
 });
 
 function loadPanelController(): typeof import("../panel").HttpClientPanelController {
@@ -481,12 +729,17 @@ function createVscodeStub(): unknown {
     EventEmitter,
     ViewColumn: {
       One: 1,
+      Beside: 2,
+    },
+    workspace: {
+      openTextDocument: (options: { content: string; language: string }) => mockOpenTextDocument(options),
     },
     window: {
       showInputBox: (options?: { value?: string }) => mockShowInputBox(options),
       showWarningMessage: (message: string, _options?: unknown, ...items: string[]) => mockShowWarningMessage(message, items),
       showInformationMessage: (_message: string) => Promise.resolve(undefined),
       showErrorMessage: (_message: string) => Promise.resolve(undefined),
+      showTextDocument: (document: unknown, options?: unknown) => mockShowTextDocument(document, options),
     },
   };
 }
@@ -517,6 +770,11 @@ function delay(timeoutMs: number): Promise<void> {
 
 let mockShowInputBox: (options?: { value?: string }) => Promise<string | undefined> = async () => undefined;
 let mockShowWarningMessage: (message: string, items: string[]) => Promise<string | undefined> = async () => undefined;
+let mockOpenTextDocument: (options: { content: string; language: string }) => Promise<unknown> = async (options) => ({
+  uri: "untitled:default",
+  ...options,
+});
+let mockShowTextDocument: (document: unknown, options?: unknown) => Promise<void> = async () => undefined;
 
 function setMockShowInputBox(handler: (options?: { value?: string }) => Promise<string | undefined>): void {
   mockShowInputBox = handler;
@@ -524,4 +782,12 @@ function setMockShowInputBox(handler: (options?: { value?: string }) => Promise<
 
 function setMockShowWarningMessage(handler: (message: string, items: string[]) => Promise<string | undefined>): void {
   mockShowWarningMessage = handler;
+}
+
+function setMockOpenTextDocument(handler: (options: { content: string; language: string }) => Promise<unknown>): void {
+  mockOpenTextDocument = handler;
+}
+
+function setMockShowTextDocument(handler: (document: unknown, options?: unknown) => Promise<void>): void {
+  mockShowTextDocument = handler;
 }

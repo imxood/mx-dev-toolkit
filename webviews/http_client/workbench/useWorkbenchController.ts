@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ExtensionToWebviewMessage,
   HttpClientViewState,
   HttpEnvironmentEntity,
   HttpRequestEntity,
+  HttpResponseResult,
   WebviewToExtensionMessage,
 } from "../../../src/http_client/types";
 import { getBootstrap } from "../shared/bootstrap";
@@ -35,7 +36,6 @@ import {
   getDisplayedResponseText,
   highlightText,
   patchWorkbenchSession,
-  renderJsonHighlightedText,
   selectHistoryLocally,
   selectRequestLocally,
   setEnvironmentLocally,
@@ -76,6 +76,7 @@ export interface WorkbenchController {
   deleteRequest(requestId: string): void;
   toggleFavorite(requestId: string, favorite: boolean): void;
   selectHistory(historyId: string): void;
+  traceHistoryPointerDown?(historyId: string, source: "group-main" | "record-item"): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -103,7 +104,16 @@ export interface WorkbenchController {
   setLoadTestProfileField(field: "totalRequests" | "concurrency" | "timeoutMs", value: number): void;
   importCurl(): void;
   copyResponse(): Promise<void>;
+  openResponseEditor(): void;
   copyHeaderValue(value: string): Promise<void>;
+}
+
+interface PendingHistoryPerfTrace {
+  seq: number;
+  historyId: string;
+  startedAt: number;
+  pointerDownAt: number | null;
+  localStateAt: number | null;
 }
 
 export function useWorkbenchController(): WorkbenchController {
@@ -123,6 +133,9 @@ export function useWorkbenchController(): WorkbenchController {
   const environmentRowIdRef = useRef(1);
   const pendingAckSourceRef = useRef<"bootstrap" | "state" | "response">("bootstrap");
   const lastAckKeyRef = useRef("");
+  const historyTraceSeqRef = useRef(0);
+  const lastHistoryPointerDownRef = useRef<{ historyId: string; at: number; source: "group-main" | "record-item" } | null>(null);
+  const pendingHistoryPerfRef = useRef<PendingHistoryPerfTrace | null>(null);
 
   useEffect(() => {
     viewStateRef.current = viewState;
@@ -160,6 +173,19 @@ export function useWorkbenchController(): WorkbenchController {
       });
     },
     [postMessage]
+  );
+
+  const traceHistoryPointerDown = useCallback(
+    (historyId: string, source: "group-main" | "record-item") => {
+      const at = getPerfNow();
+      lastHistoryPointerDownRef.current = {
+        historyId,
+        at,
+        source,
+      };
+      logFrontend("info", "perf.history.pointerdown", `historyId=${historyId} source=${source} t=${formatPerfValue(at)}`);
+    },
+    [logFrontend]
   );
 
   const notifyToast = useCallback(
@@ -491,11 +517,35 @@ export function useWorkbenchController(): WorkbenchController {
 
   const selectHistory = useCallback(
     (historyId: string) => {
+      const startedAt = getPerfNow();
+      const seq = ++historyTraceSeqRef.current;
+      const pointerDown = lastHistoryPointerDownRef.current?.historyId === historyId ? lastHistoryPointerDownRef.current : null;
+      pendingHistoryPerfRef.current = {
+        seq,
+        historyId,
+        startedAt,
+        pointerDownAt: pointerDown?.at ?? null,
+        localStateAt: null,
+      };
+      logFrontend(
+        "info",
+        "perf.history.click",
+        `seq=${seq} historyId=${historyId} pointerToClick=${formatPerfDuration(pointerDown ? startedAt - pointerDown.at : null)} source=${pointerDown?.source ?? "unknown"}`
+      );
       updateSidebarUiState((current) => ({
         ...current,
         selectedHistoryId: historyId,
       }));
-      updateViewState((current) => selectHistoryLocally(current, historyId));
+      const nextViewState = updateViewState((current) => selectHistoryLocally(current, historyId));
+      const localStateAt = getPerfNow();
+      if (pendingHistoryPerfRef.current?.seq === seq) {
+        pendingHistoryPerfRef.current.localStateAt = localStateAt;
+      }
+      logFrontend(
+        "info",
+        "perf.history.local_state",
+        `seq=${seq} historyId=${historyId} dt=${formatPerfDuration(localStateAt - startedAt)} draftId=${nextViewState.draft?.id ?? "none"}`
+      );
       updateUiState((current) => ({
         ...current,
         lastErrorMessage: "",
@@ -504,8 +554,14 @@ export function useWorkbenchController(): WorkbenchController {
         type: "httpClient/selectHistory",
         payload: { historyId },
       });
+      const dispatchAt = getPerfNow();
+      logFrontend(
+        "info",
+        "perf.history.dispatch",
+        `seq=${seq} historyId=${historyId} dt=${formatPerfDuration(dispatchAt - startedAt)}`
+      );
     },
-    [postMessage, updateSidebarUiState, updateUiState, updateViewState]
+    [logFrontend, postMessage, updateSidebarUiState, updateUiState, updateViewState]
   );
 
   const updateKeyValue = useCallback(
@@ -756,6 +812,23 @@ export function useWorkbenchController(): WorkbenchController {
     }));
   }, [updateUiState]);
 
+  const openResponseEditor = useCallback(() => {
+    const response = viewStateRef.current.response;
+    if (!response) {
+      notifyToast("当前没有可打开的响应内容", "warning");
+      return;
+    }
+
+    const showOriginal = uiStateRef.current.responsePretty;
+    postMessage({
+      type: "httpClient/openResponseEditor",
+      payload: {
+        content: getDisplayedResponseText(response, showOriginal),
+        language: showOriginal ? inferResponseEditorLanguage(response) : "plaintext",
+      },
+    });
+  }, [notifyToast, postMessage]);
+
   const setResponseSearch = useCallback((keyword: string) => {
     updateUiState((current) => ({
       ...current,
@@ -969,6 +1042,58 @@ export function useWorkbenchController(): WorkbenchController {
     };
   }, [bootstrap.buildId, importCurl, logFrontend, performLoadTest, performSave, performSend, postMessage, replaceUiState, replaceViewState, updateSidebarUiState]);
 
+  useLayoutEffect(() => {
+    const pendingTrace = pendingHistoryPerfRef.current;
+    if (!pendingTrace) {
+      return;
+    }
+
+    const historySelected = viewState.selectedHistoryId === pendingTrace.historyId;
+    const sidebarSelected = sidebarUiState.selectedHistoryId === pendingTrace.historyId;
+    if (!historySelected || !sidebarSelected) {
+      return;
+    }
+
+    const committedAt = getPerfNow();
+    logFrontend(
+      "info",
+      "perf.history.commit",
+      `seq=${pendingTrace.seq} historyId=${pendingTrace.historyId} total=${formatPerfDuration(
+        committedAt - pendingTrace.startedAt
+      )} localToCommit=${formatPerfDuration(
+        pendingTrace.localStateAt !== null ? committedAt - pendingTrace.localStateAt : null
+      )} pointerToCommit=${formatPerfDuration(
+        pendingTrace.pointerDownAt !== null ? committedAt - pendingTrace.pointerDownAt : null
+      )}`
+    );
+
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      pendingHistoryPerfRef.current = null;
+      return;
+    }
+
+    const seq = pendingTrace.seq;
+    window.requestAnimationFrame(() => {
+      const activeTrace = pendingHistoryPerfRef.current;
+      if (!activeTrace || activeTrace.seq !== seq) {
+        return;
+      }
+      const rafAt = getPerfNow();
+      logFrontend(
+        "info",
+        "perf.history.raf",
+        `seq=${activeTrace.seq} historyId=${activeTrace.historyId} total=${formatPerfDuration(
+          rafAt - activeTrace.startedAt
+        )} localToRaf=${formatPerfDuration(
+          activeTrace.localStateAt !== null ? rafAt - activeTrace.localStateAt : null
+        )} pointerToRaf=${formatPerfDuration(
+          activeTrace.pointerDownAt !== null ? rafAt - activeTrace.pointerDownAt : null
+        )}`
+      );
+      pendingHistoryPerfRef.current = null;
+    });
+  }, [logFrontend, sidebarUiState.selectedHistoryId, viewState.selectedHistoryId]);
+
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
       logFrontend("error", "window.error", String(event.error ?? event.message ?? "unknown window error"));
@@ -1031,11 +1156,8 @@ export function useWorkbenchController(): WorkbenchController {
     if (!viewState.response) {
       return "";
     }
-    if (uiState.responsePretty && viewState.response.isJson) {
-      return renderJsonHighlightedText(getDisplayedResponseText(viewState.response, true), uiState.responseSearch);
-    }
     return highlightText(displayedResponseText, uiState.responseSearch);
-  }, [displayedResponseText, uiState.responsePretty, uiState.responseSearch, viewState.response]);
+  }, [displayedResponseText, uiState.responseSearch, viewState.response]);
 
   return {
     buildId: bootstrap.buildId,
@@ -1067,6 +1189,7 @@ export function useWorkbenchController(): WorkbenchController {
     deleteRequest,
     toggleFavorite,
     selectHistory,
+    traceHistoryPointerDown,
     selectEnvironment: setEnvironment,
     setEnvironmentDraftName,
     updateEnvironmentVariable,
@@ -1094,8 +1217,31 @@ export function useWorkbenchController(): WorkbenchController {
     setLoadTestProfileField,
     importCurl,
     copyResponse,
+    openResponseEditor,
     copyHeaderValue,
   };
+}
+
+function inferResponseEditorLanguage(response: HttpResponseResult): string {
+  if (response.isJson) {
+    return "json";
+  }
+
+  const contentType = String(response.meta.contentType || "").toLowerCase();
+  if (contentType.includes("xml")) {
+    return "xml";
+  }
+  if (contentType.includes("html")) {
+    return "html";
+  }
+  if (contentType.includes("javascript")) {
+    return "javascript";
+  }
+  if (contentType.includes("css")) {
+    return "css";
+  }
+
+  return "plaintext";
 }
 
 function createId(): string {
@@ -1122,4 +1268,20 @@ function createWorkbenchScratchRequest(collectionId: string | null): HttpRequest
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function formatPerfValue(value: number): string {
+  return value.toFixed(2);
+}
+
+function formatPerfDuration(durationMs: number | null): string {
+  return durationMs === null ? "n/a" : `${durationMs.toFixed(2)}ms`;
 }

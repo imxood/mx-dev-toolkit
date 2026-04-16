@@ -16,7 +16,6 @@ import {
   selectHistoryLocally,
   selectRequestLocally,
   setEnvironmentLocally,
-  renderJsonHighlightedText,
   syncParamsFromUrl,
   syncUrlFromParams,
   toggleFavoriteLocally,
@@ -52,15 +51,10 @@ test("workbench_model: React workbench 纯逻辑与旧协议保持一致", async
   const requestFromParams = syncUrlFromParams(draftFromUrl);
   assert.equal(requestFromParams.url, "https://example.com/api/member?id=99#hash");
 
-  await logger.step("验证响应文本展示与 JSON 高亮输出");
+  await logger.step("验证响应文本展示与转义输出");
   const response = createResponseResult();
-  assert.equal(getDisplayedResponseText(response, true), response.bodyPrettyText);
-  assert.equal(getDisplayedResponseText(response, false), response.bodyText);
-
-  const highlighted = renderJsonHighlightedText(response.bodyPrettyText, "成功");
-  assert.match(highlighted, /json-key/);
-  assert.match(highlighted, /json-string/);
-  assert.match(highlighted, /<mark>成功<\/mark>/);
+  assert.equal(getDisplayedResponseText(response, true), response.bodyRawText);
+  assert.equal(getDisplayedResponseText(response, false), '{\\"message\\":\\"获取成功\\",\\"count\\":1}');
 
   const rawHighlighted = highlightText("first line\n获取成功\nsecond line", "成功");
   assert.match(rawHighlighted, /<mark>成功<\/mark>/);

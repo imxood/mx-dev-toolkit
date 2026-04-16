@@ -36,6 +36,8 @@ const DEFAULT_LOAD_TEST_PROFILE: HttpLoadTestProfile = {
   timeoutMs: HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS,
 };
 
+const ACTIVE_REQUEST_PERSIST_DEBOUNCE_MS = 600;
+
 export class HttpClientPanelController implements vscode.Disposable {
   private panel: vscode.WebviewPanel | null = null;
   private readonly stateChangedEmitter = new vscode.EventEmitter<HttpClientViewState>();
@@ -55,6 +57,9 @@ export class HttpClientPanelController implements vscode.Disposable {
   private pendingHostCommand: "send" | "save" | "loadTest" | "focusCurlImport" | null = null;
   private currentWebviewBuildId: string | null = null;
   private responseAckTimer: NodeJS.Timeout | null = null;
+  private activeRequestPersistTimer: NodeJS.Timeout | null = null;
+  private pendingActiveRequestId: string | null | undefined = undefined;
+  private persistedActiveRequestId: string | null = null;
   private readonly toastHostDisposable: { dispose(): void };
 
   constructor(
@@ -77,6 +82,7 @@ export class HttpClientPanelController implements vscode.Disposable {
         });
       },
     });
+    this.persistedActiveRequestId = this.store.getActiveRequestId();
   }
 
   public readonly onDidChangeState = this.stateChangedEmitter.event;
@@ -113,6 +119,7 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.panel.onDidDispose(
       () => {
         this.clearResponseAckWait();
+        void this.flushPendingActiveRequestId("panelDispose");
         this.panel = null;
         this.stopLoadTest();
       },
@@ -137,6 +144,7 @@ export class HttpClientPanelController implements vscode.Disposable {
   public dispose(): void {
     this.clearResponseAckWait();
     this.stopLoadTest();
+    void this.flushPendingActiveRequestId("dispose");
     this.stateChangedEmitter.dispose();
     this.toastHostDisposable.dispose();
     this.panel?.dispose();
@@ -165,7 +173,7 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   public async createRequest(collectionId: string | null): Promise<void> {
     const viewState = await this.createScratchRequest(collectionId, { postState: false });
-    await this.show(viewState);
+    await this.show(viewState ?? undefined);
   }
 
   public async createCollection(): Promise<void> {
@@ -279,7 +287,16 @@ export class HttpClientPanelController implements vscode.Disposable {
         await this.postState();
         return;
       case "httpClient/selectRequest":
-        await this.selectSavedRequest(message.payload.requestId, { postState: false });
+        {
+          const startedAt = performance.now();
+          this.channel.appendLine(`[HttpClientPerf][request-select] recv requestId=${message.payload.requestId}`);
+          await this.selectSavedRequest(message.payload.requestId, { postState: false, buildViewState: false });
+          this.channel.appendLine(
+            `[HttpClientPerf][request-select] host_applied requestId=${message.payload.requestId} dt=${formatPerfDuration(
+              performance.now() - startedAt
+            )}`
+          );
+        }
         return;
       case "httpClient/createScratchRequest":
         await this.createScratchRequest(null);
@@ -311,6 +328,7 @@ export class HttpClientPanelController implements vscode.Disposable {
       case "httpClient/createRequest":
         await this.createScratchRequest(message.payload.collectionId, {
           postState: false,
+          buildViewState: false,
           request: message.payload.request,
         });
         return;
@@ -339,7 +357,19 @@ export class HttpClientPanelController implements vscode.Disposable {
         await this.deleteEnvironment(message.payload.environmentId);
         return;
       case "httpClient/selectHistory":
-        await this.selectHistoryItem(message.payload.historyId, { postState: false });
+        {
+          const startedAt = performance.now();
+          this.channel.appendLine(`[HttpClientPerf][history-select] recv historyId=${message.payload.historyId}`);
+          await this.selectHistoryItem(message.payload.historyId, { postState: false, buildViewState: false });
+          this.channel.appendLine(
+            `[HttpClientPerf][history-select] host_applied historyId=${message.payload.historyId} dt=${formatPerfDuration(
+              performance.now() - startedAt
+            )}`
+          );
+        }
+        return;
+      case "httpClient/openResponseEditor":
+        await this.openResponseEditor(message.payload.content, message.payload.language);
         return;
       case "httpClient/loadTest/start":
         if (!(await this.ensureCurrentWebview("loadTest", message.payload.request))) {
@@ -369,7 +399,7 @@ export class HttpClientPanelController implements vscode.Disposable {
   private async handleDraftChanged(request: HttpRequestEntity, dirty: boolean): Promise<void> {
     this.currentDraft = cloneRequest(request);
     this.dirty = dirty;
-    await this.store.setActiveRequestId(request.id);
+    this.scheduleActiveRequestIdPersist(request.id);
     const config = await this.store.ensureInitialized();
     const savedRequest = config.requests.find((item) => item.id === request.id);
     if (savedRequest) {
@@ -381,7 +411,7 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   private async selectSavedRequest(
     requestId: string,
-    options: { postState?: boolean } = {}
+    options: { postState?: boolean; buildViewState?: boolean } = {}
   ): Promise<HttpClientViewState | null> {
     const config = await this.store.ensureInitialized();
     const savedRequest = config.requests.find((item) => item.id === requestId);
@@ -393,8 +423,11 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.currentDraft = draftState.draft ? cloneRequest(draftState.draft) : cloneRequest(savedRequest);
     this.selectedHistoryId = null;
     this.dirty = draftState.dirty;
-    await this.store.setActiveRequestId(requestId);
+    this.scheduleActiveRequestIdPersist(requestId);
     this.currentResponse = null;
+    if (options.buildViewState === false && options.postState === false) {
+      return null;
+    }
     const viewState = await this.buildViewState();
     if (options.postState !== false) {
       await this.postState(viewState);
@@ -404,14 +437,18 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   private async createScratchRequest(
     collectionId: string | null,
-    options: { postState?: boolean; request?: HttpRequestEntity } = {}
-  ): Promise<HttpClientViewState> {
+    options: { postState?: boolean; buildViewState?: boolean; request?: HttpRequestEntity } = {}
+  ): Promise<HttpClientViewState | null> {
     const draft = await this.store.createScratchRequest(collectionId, options.request);
+    this.markActiveRequestPersisted(draft.id);
     this.currentDraft = cloneRequest(draft);
     this.selectedHistoryId = null;
     this.dirty = true;
     this.currentResponse = null;
     this.responseTab = "body";
+    if (options.buildViewState === false && options.postState === false) {
+      return null;
+    }
     const viewState = await this.buildViewState();
     if (options.postState !== false) {
       await this.postState(viewState);
@@ -422,6 +459,7 @@ export class HttpClientPanelController implements vscode.Disposable {
   private async saveDraft(request: HttpRequestEntity): Promise<void> {
     try {
       const savedRequest = await this.store.saveRequest(request);
+      this.markActiveRequestPersisted(savedRequest.id);
       this.currentDraft = cloneRequest(savedRequest);
       this.selectedHistoryId = null;
       this.dirty = false;
@@ -640,6 +678,9 @@ export class HttpClientPanelController implements vscode.Disposable {
       return;
     }
     await this.store.deleteRequest(requestId);
+    if (this.persistedActiveRequestId === requestId) {
+      this.markActiveRequestPersisted(this.store.getActiveRequestId());
+    }
     if (this.currentDraft?.id === requestId) {
       this.currentDraft = null;
       this.selectedHistoryId = null;
@@ -653,6 +694,7 @@ export class HttpClientPanelController implements vscode.Disposable {
   private async duplicateRequest(requestId: string): Promise<void> {
     try {
       const duplicate = await this.store.duplicateRequest(requestId);
+      this.markActiveRequestPersisted(duplicate.id);
       this.currentDraft = cloneRequest(duplicate);
       this.selectedHistoryId = null;
       this.dirty = false;
@@ -683,7 +725,7 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   private async selectHistoryItem(
     historyId: string,
-    options: { postState?: boolean } = {}
+    options: { postState?: boolean; buildViewState?: boolean } = {}
   ): Promise<HttpClientViewState | null> {
     const history = this.store.getHistoryItem(historyId);
     if (!history) {
@@ -695,7 +737,9 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.dirty = false;
     this.currentResponse = null;
     this.responseTab = "body";
-    await this.store.setActiveRequestId(history.request.id);
+    if (options.buildViewState === false && options.postState === false) {
+      return null;
+    }
     const viewState = await this.buildViewState();
     if (options.postState !== false) {
       await this.postState(viewState);
@@ -784,6 +828,21 @@ export class HttpClientPanelController implements vscode.Disposable {
     });
   }
 
+  private async openResponseEditor(content: string, language: string): Promise<void> {
+    try {
+      const document = await vscode.workspace.openTextDocument({
+        content,
+        language,
+      });
+      await vscode.window.showTextDocument(document, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside,
+      });
+    } catch (error) {
+      await this.postError(`打开响应编辑页失败: ${(error as Error).message}`);
+    }
+  }
+
   private createHistoryRecord(
     request: HttpRequestEntity,
     environmentId: string | null,
@@ -856,12 +915,14 @@ export class HttpClientPanelController implements vscode.Disposable {
       this.currentDraft = cloneRequest(firstRequest);
       this.dirty = false;
       await this.store.setActiveRequestId(firstRequest.id);
+      this.markActiveRequestPersisted(firstRequest.id);
       return;
     }
     this.currentDraft = createDefaultRequest("新请求", snapshot.config.collections[0]?.id ?? null);
     this.dirty = true;
     await this.store.saveScratchDraft(this.currentDraft);
     await this.store.setActiveRequestId(this.currentDraft.id);
+    this.markActiveRequestPersisted(this.currentDraft.id);
   }
 
   private async postState(viewState?: HttpClientViewState): Promise<void> {
@@ -941,6 +1002,55 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.responseAckTimer = null;
   }
 
+  private scheduleActiveRequestIdPersist(requestId: string | null): void {
+    if (requestId === this.persistedActiveRequestId && this.pendingActiveRequestId === undefined) {
+      return;
+    }
+
+    this.pendingActiveRequestId = requestId;
+    if (this.activeRequestPersistTimer) {
+      clearTimeout(this.activeRequestPersistTimer);
+    }
+    this.activeRequestPersistTimer = setTimeout(() => {
+      this.activeRequestPersistTimer = null;
+      void this.flushPendingActiveRequestId("debounce");
+    }, ACTIVE_REQUEST_PERSIST_DEBOUNCE_MS);
+  }
+
+  private async flushPendingActiveRequestId(reason: "debounce" | "dispose" | "panelDispose"): Promise<void> {
+    if (this.activeRequestPersistTimer) {
+      clearTimeout(this.activeRequestPersistTimer);
+      this.activeRequestPersistTimer = null;
+    }
+
+    if (this.pendingActiveRequestId === undefined) {
+      return;
+    }
+
+    const requestId = this.pendingActiveRequestId;
+    this.pendingActiveRequestId = undefined;
+    if (requestId === this.persistedActiveRequestId) {
+      return;
+    }
+    const startedAt = performance.now();
+    await this.store.setActiveRequestId(requestId);
+    this.markActiveRequestPersisted(requestId);
+    this.channel.appendLine(
+      `[HttpClientPerf][active-request-persist] reason=${reason} requestId=${requestId ?? "null"} dt=${formatPerfDuration(
+        performance.now() - startedAt
+      )}`
+    );
+  }
+
+  private markActiveRequestPersisted(requestId: string | null): void {
+    this.persistedActiveRequestId = requestId;
+    this.pendingActiveRequestId = undefined;
+    if (this.activeRequestPersistTimer) {
+      clearTimeout(this.activeRequestPersistTimer);
+      this.activeRequestPersistTimer = null;
+    }
+  }
+
   private async reloadPanelFromState(reason: string): Promise<void> {
     if (!this.panel || !this.currentResponse || this.requestRunning) {
       return;
@@ -991,4 +1101,8 @@ function createCancelledLoadTestResult(progress: HttpLoadTestProgress | null): H
     errorSamples: [],
     cancelled: true,
   };
+}
+
+function formatPerfDuration(durationMs: number): string {
+  return `${durationMs.toFixed(2)}ms`;
 }

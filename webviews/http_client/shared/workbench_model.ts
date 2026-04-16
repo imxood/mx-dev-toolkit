@@ -392,7 +392,12 @@ export function getDisplayedResponseText(response: HttpResponseResult | null, re
     return "";
   }
 
-  return responsePretty && response.isJson ? response.bodyPrettyText : response.bodyText;
+  return responsePretty ? response.bodyRawText : escapeResponseText(response.bodyRawText);
+}
+
+export function escapeResponseText(source: string): string {
+  const escaped = JSON.stringify(String(source ?? ""));
+  return escaped.length >= 2 ? escaped.slice(1, -1) : escaped;
 }
 
 export function getSelectedHistoryOrdinal(history: HttpHistoryRecord[], selectedHistoryId: string | null, limit = 30): number | null {
