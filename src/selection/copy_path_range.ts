@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { ToastService } from "../toast/service";
+import { normalizeSelectionPath } from "./path_format";
 
 export class PathRangeCopier {
   constructor(private readonly toastService: ToastService) {}
@@ -46,18 +47,18 @@ export class PathRangeCopier {
 
     let filePath: string;
     if (useAbsolutePath) {
-      filePath = this.normalizePath(editor.document.uri.fsPath);
+      filePath = normalizeSelectionPath(editor.document.uri.fsPath);
     } else {
       const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
       if (!workspaceFolder) {
-        filePath = this.normalizePath(editor.document.uri.fsPath);
+        filePath = normalizeSelectionPath(editor.document.uri.fsPath);
         await this.toastService.notify({
           kind: "warning",
           message: "文件不在工作区内, 已回退为绝对路径",
           source: "selection.copyPathRange",
         });
       } else {
-        filePath = this.normalizePath(path.relative(workspaceFolder.uri.fsPath, editor.document.uri.fsPath));
+        filePath = normalizeSelectionPath(path.relative(workspaceFolder.uri.fsPath, editor.document.uri.fsPath));
       }
     }
 
@@ -92,9 +93,5 @@ export class PathRangeCopier {
     }
 
     return [startLine, endLine];
-  }
-
-  private normalizePath(inputPath: string): string {
-    return inputPath.replace(/\\/g, "/");
   }
 }
