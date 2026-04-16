@@ -36,6 +36,7 @@ export interface SidebarController {
   setActiveTab(tab: SidebarTab): void;
   setKeyword(keyword: string): void;
   toggleHistoryGroup(groupKey: string): void;
+  toggleCollectionGroup(groupKey: string): void;
   createRequest(collectionId?: string | null): void;
   createCollection(): void;
   renameCollection(collectionId: string): void;
@@ -47,6 +48,8 @@ export interface SidebarController {
   deleteRequest(requestId: string): void;
   toggleFavorite(requestId: string, favorite: boolean): void;
   selectHistory(historyId: string): void;
+  promptSaveHistoryToCollection(historyId: string): void;
+  saveHistoryToCollection(historyId: string, collectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -134,6 +137,16 @@ export function useSidebarController(): SidebarController {
       expandedHistoryGroups: {
         ...current.expandedHistoryGroups,
         [groupKey]: !current.expandedHistoryGroups[groupKey],
+      },
+    }));
+  }, []);
+
+  const toggleCollectionGroup = useCallback((groupKey: string) => {
+    setUiState((current) => ({
+      ...current,
+      expandedCollectionGroups: {
+        ...current.expandedCollectionGroups,
+        [groupKey]: current.expandedCollectionGroups[groupKey] === false,
       },
     }));
   }, []);
@@ -252,6 +265,26 @@ export function useSidebarController(): SidebarController {
       }));
       postMessage({
         type: "httpClientSidebar/selectHistory",
+        payload: { historyId },
+      });
+    },
+    [postMessage]
+  );
+
+  const saveHistoryToCollection = useCallback(
+    (historyId: string, collectionId: string) => {
+      postMessage({
+        type: "httpClientSidebar/saveHistoryToCollection",
+        payload: { historyId, collectionId },
+      });
+    },
+    [postMessage]
+  );
+
+  const promptSaveHistoryToCollection = useCallback(
+    (historyId: string) => {
+      postMessage({
+        type: "httpClientSidebar/promptSaveHistoryToCollection",
         payload: { historyId },
       });
     },
@@ -455,8 +488,8 @@ export function useSidebarController(): SidebarController {
       return [];
     }
 
-    return buildCollectionGroups(viewState.config, uiState.keyword, viewState.draft);
-  }, [uiState.keyword, viewState]);
+    return buildCollectionGroups(viewState.config, uiState.keyword, viewState.draft, uiState.expandedCollectionGroups);
+  }, [uiState.expandedCollectionGroups, uiState.keyword, viewState]);
 
   const favoriteRequests = useMemo(() => {
     if (!viewState) {
@@ -498,6 +531,7 @@ export function useSidebarController(): SidebarController {
     setActiveTab,
     setKeyword,
     toggleHistoryGroup,
+    toggleCollectionGroup,
     createRequest,
     createCollection,
     renameCollection,
@@ -509,6 +543,8 @@ export function useSidebarController(): SidebarController {
     deleteRequest,
     toggleFavorite,
     selectHistory,
+    promptSaveHistoryToCollection,
+    saveHistoryToCollection,
     selectEnvironment,
     setEnvironmentDraftName,
     updateEnvironmentVariable,

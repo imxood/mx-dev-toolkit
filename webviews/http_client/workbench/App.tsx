@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { SidebarSurface } from "../sidebar/SidebarApp";
-import { getSelectedHistoryOrdinal, isScratchDraft } from "../shared/workbench_model";
+import { isScratchDraft } from "../shared/workbench_model";
 import { type WorkbenchController, useWorkbenchController } from "./useWorkbenchController";
 
 export function App(): React.ReactElement {
@@ -26,11 +26,6 @@ export function AppView({
   const responseSummaryKind = !response ? "neutral" : response.ok ? "success" : "warning";
   const loadTestRunning = Boolean(viewState.loadTestProgress?.running);
   const scratchDraft = isScratchDraft(viewState);
-  const selectedHistoryOrdinal = getSelectedHistoryOrdinal(viewState.history, viewState.selectedHistoryId);
-  const draftCollection = draft?.collectionId ? viewState.config.collections.find((collection) => collection.id === draft.collectionId) ?? null : null;
-  const leftContextText = selectedHistoryOrdinal ? `记录 #${selectedHistoryOrdinal}` : !selectedHistoryOrdinal && scratchDraft ? "新建草稿" : "";
-  const requestBannerKind = selectedHistoryOrdinal ? "history" : scratchDraft ? "draft" : draft ? "active" : "empty";
-  const requestBannerText = draft ? draft.name : "请选择请求";
 
   return (
     <div className="app-shell" data-build-id={controller.buildId} data-host-state={controller.hasHostState ? "ready" : "fallback"}>
@@ -39,25 +34,7 @@ export function AppView({
       </aside>
 
       <main className="editor-shell">
-        <section className={`http-toolbar${scratchDraft ? " context-new" : ""}${selectedHistoryOrdinal ? " context-history" : ""}`}>
-          <div className="toolbar-heading toolbar-heading-balanced">
-            <div className="toolbar-side toolbar-side-left">
-              {leftContextText ? (
-                <span className={`request-context-pill${selectedHistoryOrdinal ? " request-context-pill-history" : " request-context-pill-draft"}`}>
-                  {leftContextText}
-                </span>
-              ) : (
-                <span className="toolbar-side-placeholder" aria-hidden="true" />
-              )}
-            </div>
-            <div className="toolbar-center-slot">
-              <span className={`request-name-banner request-name-banner-${requestBannerKind}`}>{requestBannerText}</span>
-            </div>
-            <div className="toolbar-side toolbar-side-right">
-              {draftCollection ? <span className="toolbar-meta-chip">{draftCollection.name}</span> : null}
-              <span className={`dirty-indicator${viewState.dirty ? " dirty" : ""}`}>{viewState.dirty ? "未保存" : "已同步"}</span>
-            </div>
-          </div>
+        <section className={`http-toolbar${scratchDraft ? " context-new" : ""}${viewState.selectedHistoryId ? " context-history" : ""}`}>
           <div className="toolbar-main">
             <select aria-label="HTTP Method" value={draft?.method ?? "GET"} onChange={(event) => controller.setMethod(event.target.value as never)} disabled={!draft}>
               <option value="GET">GET</option>
@@ -74,6 +51,11 @@ export function AppView({
               onChange={(event) => controller.setUrl(event.target.value)}
               disabled={!draft}
             />
+            <button id="send-button" className="primary-button" type="button" onClick={controller.performSend}>
+              {viewState.requestRunning ? "取消" : "发送"}
+            </button>
+          </div>
+          <div className="toolbar-secondary">
             <select
               aria-label="环境"
               value={viewState.activeEnvironmentId ?? ""}
@@ -86,23 +68,20 @@ export function AppView({
                 </option>
               ))}
             </select>
-          </div>
-          <div className="toolbar-actions">
-            <button id="send-button" className="primary-button" type="button" onClick={controller.performSend}>
-              {viewState.requestRunning ? "取消" : "发送"}
-            </button>
-            <button id="load-test-button" className="secondary-button" type="button" onClick={loadTestRunning ? controller.stopLoadTest : controller.performLoadTest}>
-              {loadTestRunning ? "停止" : "压测"}
-            </button>
-            <button id="save-button" className="secondary-button" type="button" onClick={controller.performSave}>
-              保存
-            </button>
-            <button id="import-curl-button" className="ghost-button" type="button" onClick={controller.importCurl}>
-              导入 cURL
-            </button>
-            <button className="ghost-button toolbar-help-button" type="button" title="使用说明" onClick={onOpenHelp}>
-              说明
-            </button>
+            <div className="toolbar-secondary-actions">
+              <button id="load-test-button" className="secondary-button" type="button" onClick={loadTestRunning ? controller.stopLoadTest : controller.performLoadTest}>
+                {loadTestRunning ? "停止" : "压测"}
+              </button>
+              <button id="save-button" className="secondary-button" type="button" onClick={controller.performSave}>
+                保存
+              </button>
+              <button id="import-curl-button" className="ghost-button" type="button" onClick={controller.importCurl}>
+                导入 cURL
+              </button>
+              <button className="ghost-button toolbar-help-button" type="button" title="使用说明" onClick={onOpenHelp}>
+                说明
+              </button>
+            </div>
           </div>
         </section>
 

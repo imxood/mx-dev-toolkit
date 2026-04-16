@@ -65,6 +65,7 @@ export interface WorkbenchController {
   setSidebarTab(tab: SidebarTab): void;
   setSidebarKeyword(keyword: string): void;
   toggleHistoryGroup(groupKey: string): void;
+  toggleCollectionGroup(groupKey: string): void;
   createRequest(collectionId?: string | null): void;
   createCollection(): void;
   renameCollection(collectionId: string): void;
@@ -76,6 +77,8 @@ export interface WorkbenchController {
   deleteRequest(requestId: string): void;
   toggleFavorite(requestId: string, favorite: boolean): void;
   selectHistory(historyId: string): void;
+  promptSaveHistoryToCollection(historyId: string): void;
+  saveHistoryToCollection(historyId: string, collectionId: string): void;
   traceHistoryPointerDown?(historyId: string, source: "group-main" | "record-item"): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
@@ -293,6 +296,16 @@ export function useWorkbenchController(): WorkbenchController {
       expandedHistoryGroups: {
         ...current.expandedHistoryGroups,
         [groupKey]: !current.expandedHistoryGroups[groupKey],
+      },
+    }));
+  }, [updateSidebarUiState]);
+
+  const toggleCollectionGroup = useCallback((groupKey: string) => {
+    updateSidebarUiState((current) => ({
+      ...current,
+      expandedCollectionGroups: {
+        ...current.expandedCollectionGroups,
+        [groupKey]: current.expandedCollectionGroups[groupKey] === false,
       },
     }));
   }, [updateSidebarUiState]);
@@ -562,6 +575,26 @@ export function useWorkbenchController(): WorkbenchController {
       );
     },
     [logFrontend, postMessage, updateSidebarUiState, updateUiState, updateViewState]
+  );
+
+  const saveHistoryToCollection = useCallback(
+    (historyId: string, collectionId: string) => {
+      postMessage({
+        type: "httpClient/saveHistoryToCollection",
+        payload: { historyId, collectionId },
+      });
+    },
+    [postMessage]
+  );
+
+  const promptSaveHistoryToCollection = useCallback(
+    (historyId: string) => {
+      postMessage({
+        type: "httpClient/promptSaveHistoryToCollection",
+        payload: { historyId },
+      });
+    },
+    [postMessage]
   );
 
   const updateKeyValue = useCallback(
@@ -969,8 +1002,8 @@ export function useWorkbenchController(): WorkbenchController {
   }, [sidebarUiState.expandedHistoryGroups, sidebarUiState.keyword, sidebarUiState.selectedHistoryId, viewState]);
 
   const collectionGroups = useMemo(() => {
-    return buildCollectionGroups(viewState.config, sidebarUiState.keyword, viewState.draft);
-  }, [sidebarUiState.keyword, viewState]);
+    return buildCollectionGroups(viewState.config, sidebarUiState.keyword, viewState.draft, sidebarUiState.expandedCollectionGroups);
+  }, [sidebarUiState.expandedCollectionGroups, sidebarUiState.keyword, viewState]);
 
   const favoriteRequests = useMemo(() => {
     return buildFavoriteRequests(viewState.config, sidebarUiState.keyword, viewState.draft);
@@ -1178,6 +1211,7 @@ export function useWorkbenchController(): WorkbenchController {
     setSidebarTab,
     setSidebarKeyword,
     toggleHistoryGroup,
+    toggleCollectionGroup,
     createRequest,
     createCollection,
     renameCollection,
@@ -1189,6 +1223,8 @@ export function useWorkbenchController(): WorkbenchController {
     deleteRequest,
     toggleFavorite,
     selectHistory,
+    promptSaveHistoryToCollection,
+    saveHistoryToCollection,
     traceHistoryPointerDown,
     selectEnvironment: setEnvironment,
     setEnvironmentDraftName,

@@ -1,25 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HttpClientViewState, HttpEnvironmentEntity, HttpHistoryRecord, HttpRequestEntity } from "../../../src/http_client/types";
 import {
-  formatClock,
-  getHistoryStatusClass,
-  getHistoryStatusText,
-  relativeTime,
+  buildVisibleHistoryRecords,
   type SidebarTab,
+  type SidebarUiState,
 } from "../shared/sidebar_model";
-import { getSelectedHistoryOrdinal } from "../shared/workbench_model";
 import type { WorkbenchController } from "../workbench/useWorkbenchController";
 import { type SidebarController, useSidebarController } from "./useSidebarController";
 
 interface SidebarViewController {
   buildId: string;
   viewState: HttpClientViewState | null;
-  uiState: {
-    activeTab: SidebarTab;
-    keyword: string;
-    selectedHistoryId: string | null;
-    selectedEnvironmentId: string | null;
-  };
+  uiState: Pick<SidebarUiState, "activeTab" | "keyword" | "selectedHistoryId" | "selectedEnvironmentId" | "expandedCollectionGroups">;
   hasHostState: boolean;
   historyGroups: SidebarController["historyGroups"];
   collectionGroups: SidebarController["collectionGroups"];
@@ -32,6 +24,7 @@ interface SidebarViewController {
   setActiveTab(tab: SidebarTab): void;
   setKeyword(keyword: string): void;
   toggleHistoryGroup(groupKey: string): void;
+  toggleCollectionGroup(groupKey: string): void;
   createRequest(collectionId?: string | null): void;
   createCollection(): void;
   renameCollection(collectionId: string): void;
@@ -43,6 +36,8 @@ interface SidebarViewController {
   deleteRequest(requestId: string): void;
   toggleFavorite(requestId: string, favorite: boolean): void;
   selectHistory(historyId: string): void;
+  promptSaveHistoryToCollection(historyId: string): void;
+  saveHistoryToCollection(historyId: string, collectionId: string): void;
   traceHistoryPointerDown?(historyId: string, source: "group-main" | "record-item"): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
@@ -77,7 +72,6 @@ interface SidebarViewProps {
   onCollectionContextMenu?: (event: React.MouseEvent<HTMLElement>, collectionId: string) => void;
   onRequestContextMenu?: (event: React.MouseEvent<HTMLElement>, request: HttpRequestEntity) => void;
   onActivityContextMenu?: (event: React.MouseEvent<HTMLElement>) => void;
-  onHistoryGroupContextMenu?: (event: React.MouseEvent<HTMLElement>, group: SidebarViewController["historyGroups"][number]) => void;
   onHistoryRecordContextMenu?: (event: React.MouseEvent<HTMLElement>, record: HttpHistoryRecord) => void;
   onEnvironmentListContextMenu?: (event: React.MouseEvent<HTMLElement>) => void;
   onEnvironmentContextMenu?: (event: React.MouseEvent<HTMLElement>, environment: HttpEnvironmentEntity | null) => void;
@@ -204,7 +198,7 @@ export function SidebarSurface({ controller }: { controller: SidebarController |
           id: "open-latest-history",
           label: "打开最近一条记录",
           onSelect: () => {
-            const latest = adaptedController.historyGroups[0]?.latestRecord;
+            const latest = adaptedController.viewState?.history[0] ?? null;
             if (latest) {
               adaptedController.selectHistory(latest.id);
             }
@@ -303,7 +297,7 @@ export function SidebarSurface({ controller }: { controller: SidebarController |
           id: "open-latest-history",
           label: "打开最近一条记录",
           onSelect: () => {
-            const latest = adaptedController.historyGroups[0]?.latestRecord;
+            const latest = adaptedController.viewState?.history[0] ?? null;
             if (latest) {
               adaptedController.selectHistory(latest.id);
             }
@@ -317,26 +311,6 @@ export function SidebarSurface({ controller }: { controller: SidebarController |
       ]);
     },
     [adaptedController, openMenu]
-  );
-
-  const handleHistoryGroupContextMenu = useCallback(
-    (event: React.MouseEvent<HTMLElement>, group: SidebarViewController["historyGroups"][number]) => {
-      openMenu(event, group.title || "请求记录", [
-        {
-          id: "open-latest-history",
-          label: "打开最新记录",
-          onSelect: () => adaptedController.selectHistory(group.latestRecord.id),
-        },
-        {
-          id: "copy-latest-url",
-          label: "复制请求 URL",
-          onSelect: () => {
-            void copyText(group.latestRecord.request.url || "", "请求 URL 已复制");
-          },
-        },
-      ]);
-    },
-    [adaptedController, copyText, openMenu]
   );
 
   const handleHistoryRecordContextMenu = useCallback(
@@ -353,6 +327,11 @@ export function SidebarSurface({ controller }: { controller: SidebarController |
           onSelect: () => {
             void copyText(record.request.url || "", "请求 URL 已复制");
           },
+        },
+        {
+          id: "save-history-to-collection",
+          label: "保存到集合...",
+          onSelect: () => adaptedController.promptSaveHistoryToCollection(record.id),
         },
       ]);
     },
@@ -483,7 +462,6 @@ export function SidebarSurface({ controller }: { controller: SidebarController |
         onCollectionContextMenu={handleCollectionContextMenu}
         onRequestContextMenu={handleRequestContextMenu}
         onActivityContextMenu={handleActivityContextMenu}
-        onHistoryGroupContextMenu={handleHistoryGroupContextMenu}
         onHistoryRecordContextMenu={handleHistoryRecordContextMenu}
         onEnvironmentListContextMenu={handleEnvironmentListContextMenu}
         onEnvironmentContextMenu={handleEnvironmentContextMenu}
@@ -504,7 +482,6 @@ export function SidebarView({
   onCollectionContextMenu,
   onRequestContextMenu,
   onActivityContextMenu,
-  onHistoryGroupContextMenu,
   onHistoryRecordContextMenu,
   onEnvironmentListContextMenu,
   onEnvironmentContextMenu,
@@ -546,7 +523,6 @@ export function SidebarView({
           onCollectionContextMenu,
           onRequestContextMenu,
           onActivityContextMenu,
-          onHistoryGroupContextMenu,
           onHistoryRecordContextMenu,
           onEnvironmentListContextMenu,
           onEnvironmentContextMenu,
@@ -593,7 +569,6 @@ function renderPanelContent(
     | "onCollectionContextMenu"
     | "onRequestContextMenu"
     | "onActivityContextMenu"
-    | "onHistoryGroupContextMenu"
     | "onHistoryRecordContextMenu"
     | "onEnvironmentListContextMenu"
     | "onEnvironmentContextMenu"
@@ -630,7 +605,7 @@ function renderPanelContent(
     );
   }
 
-  return renderActivityPanel(controller, events.onActivityContextMenu, events.onHistoryGroupContextMenu, events.onHistoryRecordContextMenu);
+  return renderActivityPanel(controller, events.onActivityContextMenu, events.onHistoryRecordContextMenu);
 }
 
 function renderCollectionsPanel(
@@ -640,7 +615,8 @@ function renderCollectionsPanel(
   onRequestContextMenu?: (event: React.MouseEvent<HTMLElement>, request: HttpRequestEntity) => void
 ): React.ReactElement {
   const activeRequestId = controller.viewState?.activeRequestId ?? null;
-  const noResult = controller.collectionGroups.length === 0 && controller.favoriteRequests.length === 0 && controller.ungroupedRequests.length === 0;
+  const ungroupedExpanded = controller.uiState.expandedCollectionGroups["__ungrouped__"] !== false;
+  const noResult = controller.collectionGroups.length === 0 && controller.ungroupedRequests.length === 0;
   const hasKeyword = controller.uiState.keyword.trim().length > 0;
 
   return (
@@ -654,53 +630,53 @@ function renderCollectionsPanel(
         {noResult ? (
           renderEmptyState(hasKeyword ? "没有匹配的请求" : "还没有任何 HTTP 请求", !hasKeyword, controller)
         ) : (
-          <>
-            {controller.favoriteRequests.length > 0 ? (
-              <section className="group">
-                <div className="group-title">
-                  <div className="group-title-main">
-                    <span>收藏</span>
-                    <span className="group-count">{controller.favoriteRequests.length}</span>
-                  </div>
-                </div>
-                <div className="group-items">
-                  {controller.favoriteRequests.map((request) => renderRequestRow(request, activeRequestId, controller, onRequestContextMenu))}
-                </div>
-              </section>
-            ) : null}
-
+          <div className="compact-request-list">
             {controller.collectionGroups.map((group) => (
               <section className="group" key={group.collectionId}>
                 <div className="group-title" onContextMenu={onCollectionContextMenu ? (event) => onCollectionContextMenu(event, group.collectionId) : undefined}>
-                  <div className="group-title-main">
-                    <span>{group.collectionName}</span>
-                    <span className="group-count">{group.requests.length}</span>
+                  <button className="group-title-button" type="button" onClick={() => controller.toggleCollectionGroup(group.collectionId)}>
+                    <div className="group-title-main">
+                      <span>{group.collectionName}</span>
+                      <span className="group-count">{group.requests.length}</span>
+                    </div>
+                    <span className="group-title-toggle" aria-hidden="true">
+                      {group.expanded ? "收起" : "展开"}
+                    </span>
+                  </button>
+                </div>
+                {group.expanded ? (
+                  <div className="group-items">
+                    {group.requests.length === 0 ? (
+                      <div className="empty-state compact-empty">暂无请求</div>
+                    ) : (
+                      group.requests.map((request) => renderRequestRow(request, activeRequestId, controller, onRequestContextMenu))
+                    )}
                   </div>
-                </div>
-                <div className="group-items">
-                  {group.requests.length === 0 ? (
-                    <div className="empty-state compact-empty">暂无请求</div>
-                  ) : (
-                    group.requests.map((request) => renderRequestRow(request, activeRequestId, controller, onRequestContextMenu))
-                  )}
-                </div>
+                ) : null}
               </section>
             ))}
 
             {controller.ungroupedRequests.length > 0 ? (
               <section className="group">
                 <div className="group-title">
-                  <div className="group-title-main">
-                    <span>未分组</span>
-                    <span className="group-count">{controller.ungroupedRequests.length}</span>
+                  <button className="group-title-button" type="button" onClick={() => controller.toggleCollectionGroup("__ungrouped__")}>
+                    <div className="group-title-main">
+                      <span>未分组</span>
+                      <span className="group-count">{controller.ungroupedRequests.length}</span>
+                    </div>
+                    <span className="group-title-toggle" aria-hidden="true">
+                      {ungroupedExpanded ? "收起" : "展开"}
+                    </span>
+                  </button>
+                </div>
+                {ungroupedExpanded ? (
+                  <div className="group-items">
+                    {controller.ungroupedRequests.map((request) => renderRequestRow(request, activeRequestId, controller, onRequestContextMenu))}
                   </div>
-                </div>
-                <div className="group-items">
-                  {controller.ungroupedRequests.map((request) => renderRequestRow(request, activeRequestId, controller, onRequestContextMenu))}
-                </div>
+                ) : null}
               </section>
             ) : null}
-          </>
+          </div>
         )}
       </div>
     </>
@@ -793,125 +769,51 @@ function renderEnvironmentsPanel(
 function renderActivityPanel(
   controller: SidebarViewController,
   onActivityContextMenu?: (event: React.MouseEvent<HTMLElement>) => void,
-  onHistoryGroupContextMenu?: (event: React.MouseEvent<HTMLElement>, group: SidebarViewController["historyGroups"][number]) => void,
   onHistoryRecordContextMenu?: (event: React.MouseEvent<HTMLElement>, record: HttpHistoryRecord) => void
 ): React.ReactElement {
   const viewState = controller.viewState;
+  const visibleHistoryRecords = viewState
+    ? buildVisibleHistoryRecords(viewState, controller.uiState.keyword, controller.uiState.selectedHistoryId)
+    : [];
   return (
     <>
       <div className="panel-head">
         <div className="panel-head-main">
-          <span className="panel-head-title">最近请求记录 30条</span>
+          <span className="panel-head-title">记录</span>
         </div>
       </div>
       <div className="list-body" onContextMenu={onActivityContextMenu}>
-        {controller.historyGroups.length === 0
+        {visibleHistoryRecords.length === 0
           ? renderEmptyState(viewState?.history.length === 0 ? "暂无历史记录" : "没有匹配的历史记录", viewState?.history.length === 0, controller)
-          : controller.historyGroups.map((group, groupIndex) => {
-              const latestRecordOrdinal = getSelectedHistoryOrdinal(viewState?.history ?? [], group.latestRecord.id) ?? groupIndex + 1;
-              const statusText = getHistoryStatusText(group.latestRecord);
-              const statusClass = getHistoryStatusClass(group.latestRecord);
-              const olderRecords = group.records.slice(1, 4);
-              const overflowCount = Math.max(0, group.totalCount - 1 - olderRecords.length);
-              const latestRecordActive = group.activeRecordId === group.latestRecord.id;
-              const groupCardClassName = [
-                "history-group-card",
-                latestRecordActive ? "latest-active" : "",
-                group.active && !latestRecordActive ? "child-active" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-              return (
-                <div key={group.key} className={groupCardClassName} onContextMenu={onHistoryGroupContextMenu ? (event) => onHistoryGroupContextMenu(event, group) : undefined}>
-                  <div className="history-group-head">
-                    <button
-                      className={`history-group-main${latestRecordActive ? " active" : ""}`}
-                      type="button"
-                      onPointerDown={(event) => {
-                        if (!shouldHandlePrimaryPointerDown(event)) {
-                          return;
-                        }
-                        controller.traceHistoryPointerDown?.(group.latestRecord.id, "group-main");
-                        controller.selectHistory(group.latestRecord.id);
-                      }}
-                      onClick={(event) => {
-                        if (shouldHandleKeyboardClick(event)) {
-                          controller.selectHistory(group.latestRecord.id);
-                        }
-                      }}
-                    >
-                      <div className="history-group-top">
-                        <div className="history-top-main">
-                          <span className="history-order-pill">#{latestRecordOrdinal}</span>
-                          <span className={`method-pill method-${group.method.toLowerCase()}`}>{group.method}</span>
-                          <span className="history-group-title">{group.title}</span>
-                        </div>
-                        <div className="history-top-side">
-                          <span className={`status-pill ${statusClass}`}>{statusText}</span>
-                          <span className="history-side-metric">{group.latestRecord.responseSummary.durationMs} ms</span>
-                        </div>
-                      </div>
-                      <div className="history-group-bottom">
-                        <div className="history-group-url">{group.latestUrl || "未填写 URL"}</div>
-                        <div className="history-meta-side">
-                          <span className="history-group-count">{group.totalCount} 次</span>
-                          <span>{relativeTime(group.latestRecord.executedAt)}</span>
-                        </div>
-                      </div>
-                    </button>
-                    <button className="icon-button history-group-toggle" type="button" onClick={() => controller.toggleHistoryGroup(group.key)}>
-                      {group.expanded ? "−" : "+"}
-                    </button>
-                  </div>
-                  {group.expanded ? (
-                    <div className="history-group-items">
-                      {olderRecords.map((record) => {
-                        const ordinal = getSelectedHistoryOrdinal(viewState?.history ?? [], record.id);
-                        return (
-                          <button
-                            key={record.id}
-                            className={`history-record-item${group.activeRecordId === record.id ? " active" : ""}`}
-                            type="button"
-                            onPointerDown={(event) => {
-                              if (!shouldHandlePrimaryPointerDown(event)) {
-                                return;
-                              }
-                              controller.traceHistoryPointerDown?.(record.id, "record-item");
-                              controller.selectHistory(record.id);
-                            }}
-                            onClick={(event) => {
-                              if (shouldHandleKeyboardClick(event)) {
-                                controller.selectHistory(record.id);
-                              }
-                            }}
-                            onContextMenu={onHistoryRecordContextMenu ? (event) => onHistoryRecordContextMenu(event, record) : undefined}
-                          >
-                            <div className="history-record-top">
-                              <div className="history-top-main">
-                                <span className="history-order-pill subtle">#{ordinal ?? "?"}</span>
-                                <span className={`method-pill method-${group.method.toLowerCase()}`}>{group.method}</span>
-                                <span className="history-group-title">{group.title}</span>
-                              </div>
-                              <div className="history-top-side history-top-side-compact">
-                                <span className={`status-pill ${getHistoryStatusClass(record)}`}>{getHistoryStatusText(record)}</span>
-                                <span className="history-side-metric">{record.responseSummary.durationMs} ms</span>
-                              </div>
-                            </div>
-                            <div className="history-record-bottom">
-                              <div className="history-record-caption">{record.request.url || "未填写 URL"}</div>
-                              <div className="history-record-meta">
-                                <span>{formatClock(record.executedAt)}</span>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                      {overflowCount > 0 ? <div className="history-record-more">还有 {overflowCount} 条较早记录</div> : null}
+          : (
+              <div className="compact-request-list">
+                {visibleHistoryRecords.map(({ record, active }) => (
+                  <button
+                    key={record.id}
+                    className={`list-item compact-request-item${active ? " active" : ""}`}
+                    type="button"
+                    onPointerDown={(event) => {
+                      if (!shouldHandlePrimaryPointerDown(event)) {
+                        return;
+                      }
+                      controller.traceHistoryPointerDown?.(record.id, "record-item");
+                      controller.selectHistory(record.id);
+                    }}
+                    onClick={(event) => {
+                      if (shouldHandleKeyboardClick(event)) {
+                        controller.selectHistory(record.id);
+                      }
+                    }}
+                    onContextMenu={onHistoryRecordContextMenu ? (event) => onHistoryRecordContextMenu(event, record) : undefined}
+                  >
+                    <div className="compact-request-row">
+                      <span className={`method-pill method-${record.request.method.toLowerCase()}`}>{record.request.method}</span>
+                      <span className="compact-request-url">{record.request.url || "未填写 URL"}</span>
                     </div>
-                  ) : null}
-                </div>
-              );
-            })}
+                  </button>
+                ))}
+              </div>
+            )}
       </div>
     </>
   );
@@ -941,15 +843,9 @@ function renderRequestRow(
         }}
         onContextMenu={onRequestContextMenu ? (event) => onRequestContextMenu(event, request) : undefined}
       >
-        <div className="collection-main">
+        <div className="collection-main compact-request-row">
           <span className={`method-pill method-${request.method.toLowerCase()}`}>{request.method}</span>
-          <div className="request-copy-block">
-            <div className="item-title">
-              <span>{request.name}</span>
-              {request.favorite ? <span className="row-inline-badge">收藏</span> : null}
-            </div>
-            <div className="item-subtitle">{request.url || "未填写 URL"}</div>
-          </div>
+          <span className="compact-request-url">{request.url || "未填写 URL"}</span>
         </div>
       </button>
       {pending ? <span className="request-action-status">{controller.pendingRequestAction?.kind === "delete" ? "删除中" : "复制中"}</span> : null}
@@ -1009,6 +905,7 @@ function normalizeController(controller: SidebarController | WorkbenchController
     setActiveTab: controller.setSidebarTab,
     setKeyword: controller.setSidebarKeyword,
     toggleHistoryGroup: controller.toggleHistoryGroup,
+    toggleCollectionGroup: controller.toggleCollectionGroup,
     createRequest: controller.createRequest,
     createCollection: controller.createCollection,
     renameCollection: controller.renameCollection,
@@ -1020,6 +917,8 @@ function normalizeController(controller: SidebarController | WorkbenchController
     deleteRequest: controller.deleteRequest,
     toggleFavorite: controller.toggleFavorite,
     selectHistory: controller.selectHistory,
+    promptSaveHistoryToCollection: controller.promptSaveHistoryToCollection,
+    saveHistoryToCollection: controller.saveHistoryToCollection,
     traceHistoryPointerDown: "traceHistoryPointerDown" in controller ? controller.traceHistoryPointerDown : undefined,
     selectEnvironment: controller.selectEnvironment,
     setEnvironmentDraftName: controller.setEnvironmentDraftName,

@@ -15,9 +15,9 @@ import type { WorkbenchController } from "../workbench/useWorkbenchController";
 import { createFallbackViewState, createInitialUiState } from "../shared/workbench_model";
 import { createInitialSidebarUiState } from "../shared/sidebar_model";
 
-test("component_contract: 工作台压测按钮与响应区保持正确接线", async () => {
+test("component_contract: 工作台工具栏与响应区保持正确接线", async () => {
   const logger = await createTestLogger("http_client_component_contract.txt");
-  await logger.flow("验证 React 工作台的主操作按钮接线与响应正文渲染契约");
+  await logger.flow("验证 React 工作台的标题栏, URL 行发送按钮和响应正文渲染契约");
 
   let loadTestCalls = 0;
   let stopLoadTestCalls = 0;
@@ -33,11 +33,17 @@ test("component_contract: 工作台压测按钮与响应区保持正确接线", 
     openResponseEditorCalls += 1;
   };
 
-  await logger.step("主工作台应移除旧提示文案, 并暴露说明按钮");
+  controller.viewState.draft = createDefaultRequest("临时草稿", controller.viewState.config.collections[0].id);
+  controller.viewState.activeRequestId = controller.viewState.draft.id;
+
+  await logger.step("标题行应已移除, 且发送按钮应并入 METHOD/URL 同一行");
   const chromeTree = AppView({ controller });
-  assert.throws(() => findElement(chromeTree, (element) => readText(element.props.children as React.ReactNode) === "Editor"));
-  assert.throws(() => findElement(chromeTree, (element) => readText(element.props.children as React.ReactNode) === "Ctrl+Enter 发送"));
-  assert.equal(findElement(chromeTree, (element) => readText(element.props.children as React.ReactNode) === "说明").props.className, "ghost-button toolbar-help-button");
+  assert.throws(() => findElement(chromeTree, (element) => element.props.className === "toolbar-title-row"));
+  const toolbarMain = findElement(chromeTree, (element) => element.props.className === "toolbar-main");
+  assert.equal(findElement(toolbarMain.props.children as React.ReactNode, (element) => element.props.id === "send-button").props.id, "send-button");
+  const toolbarSecondary = findElement(chromeTree, (element) => element.props.className === "toolbar-secondary");
+  assert.equal(findElement(toolbarSecondary.props.children as React.ReactNode, (element) => element.props.className === "toolbar-secondary-actions").props.className, "toolbar-secondary-actions");
+  assert.equal(findElement(toolbarSecondary.props.children as React.ReactNode, (element) => readText(element.props.children as React.ReactNode) === "说明").props.className, "ghost-button toolbar-help-button");
 
   await logger.step("未运行压测时, 顶部主按钮应触发 performLoadTest");
   const idleTree = AppView({ controller });
@@ -95,39 +101,23 @@ test("component_contract: 工作台压测按钮与响应区保持正确接线", 
   const html = (responseCode.props.dangerouslySetInnerHTML as { __html: string }).__html;
   assert.match(String(html), /<mark>成功<\/mark>/);
 
-  await logger.step("选中历史记录时, URL 编辑区应显示对应序号");
-  controller.viewState.selectedHistoryId = "history-2";
-  controller.viewState.history = [
-    createHistoryRecord("history-1", "https://api.example.com/member", "2026-04-14T08:00:00.000Z", 47),
-    createHistoryRecord("history-2", "https://api.example.com/member-retry", "2026-04-14T07:59:00.000Z", 58),
-  ];
-  const historyTree = AppView({ controller });
-  assert.equal(
-    findElement(
-      historyTree,
-      (element) =>
-        element.props.className === "request-context-pill request-context-pill-history" &&
-        readText(element.props.children as React.ReactNode) === "记录 #2"
-    ).props.className,
-    "request-context-pill request-context-pill-history"
-  );
-
-  await logger.conclusion("工作台主按钮与响应渲染契约已得到自动化保护");
+  await logger.conclusion("工作台标题栏, 发送按钮布局和响应渲染契约已得到自动化保护");
 });
 
-test("component_contract: 侧边栏应暴露右键菜单入口与环境编辑界面", async () => {
+test("component_contract: 侧边栏集合页应显示折叠集合和紧凑 URL 列表", async () => {
   const logger = await createTestLogger("http_client_component_contract.txt");
-  await logger.flow("验证 React 侧边栏已暴露右键菜单入口, 收藏区和环境编辑区");
+  await logger.flow("验证 React 侧边栏集合页已切到可折叠集合和 METHOD + URL 紧凑列表");
 
   const actions = {
     requestMenu: 0,
     collectionMenu: 0,
+    historyMenu: 0,
     environmentMenu: 0,
     variableMenu: 0,
   };
   const controller = createSidebarController(actions);
 
-  await logger.step("集合页应显示收藏分组, 并允许集合标题和请求行接入右键菜单");
+  await logger.step("集合页应显示可折叠集合标题, 并允许集合标题和请求行接入右键菜单");
   const collectionsTree = SidebarView({
     controller,
     onCollectionContextMenu: () => {
@@ -137,12 +127,10 @@ test("component_contract: 侧边栏应暴露右键菜单入口与环境编辑界
       actions.requestMenu += 1;
     },
   });
+  assert.equal(findElement(collectionsTree, (element) => element.props.className === "group-title-button").props.className, "group-title-button");
   assert.equal(
-    findElement(
-      collectionsTree,
-      (element) => element.props.className === "group-title-main" && readText(element.props.children as React.ReactNode).includes("收藏")
-    ).props.className,
-    "group-title-main"
+    findElement(collectionsTree, (element) => element.props.className === "compact-request-url" && readText(element.props.children as React.ReactNode) === "https://api.example.com/member").props.className,
+    "compact-request-url"
   );
   invokeContextMenu(
     findElement(
@@ -154,7 +142,7 @@ test("component_contract: 侧边栏应暴露右键菜单入口与环境编辑界
   assert.equal(actions.collectionMenu, 1);
   assert.equal(actions.requestMenu, 1);
 
-  await logger.step("环境页应渲染编辑卡片, 并允许环境项和变量行接入右键菜单");
+  await logger.step("环境页应继续渲染编辑卡片, 并允许环境项和变量行接入右键菜单");
   controller.uiState.activeTab = "environments";
   const environmentsTree = SidebarView({
     controller,
@@ -177,53 +165,43 @@ test("component_contract: 侧边栏应暴露右键菜单入口与环境编辑界
   assert.equal(actions.environmentMenu, 1);
   assert.equal(actions.variableMenu, 1);
 
-  await logger.conclusion("侧边栏右键入口, 收藏区和环境编辑区已得到自动化保护");
+  await logger.conclusion("集合折叠, 紧凑 URL 列表和环境编辑入口已得到自动化保护");
 });
 
-test("component_contract: 记录页不应重复渲染最新记录, 且旧记录应有明确选中态", async () => {
+test("component_contract: 记录页应显示紧凑历史项并保留右键入口", async () => {
   const logger = await createTestLogger("http_client_component_contract.txt");
-  await logger.flow("验证 React 侧边栏记录页的去重展示和选中态契约");
+  await logger.flow("验证 React 侧边栏记录页已切到 METHOD + URL 紧凑历史列表");
 
   const actions = {
     requestMenu: 0,
     collectionMenu: 0,
+    historyMenu: 0,
     environmentMenu: 0,
     variableMenu: 0,
   };
   const controller = createSidebarController(actions);
   controller.uiState.activeTab = "activity";
-  controller.historyGroups = [
-    {
-      key: "request:member",
-      requestId: "request-member",
-      title: "获取会员信息",
-      method: "POST",
-      latestUrl: "https://api.example.com/member",
-      latestRecord: createHistoryRecord("history-1", "https://api.example.com/member", "2026-04-14T08:00:00.000Z", 47),
-      records: [
-        createHistoryRecord("history-1", "https://api.example.com/member", "2026-04-14T08:00:00.000Z", 47),
-        createHistoryRecord("history-2", "https://api.example.com/member-retry", "2026-04-14T07:59:00.000Z", 58),
-      ],
-      totalCount: 2,
-      expanded: true,
-      active: true,
-      activeRecordId: "history-2",
-    },
+  controller.uiState.selectedHistoryId = "history-2";
+  assert.ok(controller.viewState);
+  controller.viewState.history = [
+    createHistoryRecord("history-1", "https://api.example.com/member", "2026-04-14T08:00:00.000Z", 47),
+    createHistoryRecord("history-2", "https://api.example.com/member-retry", "2026-04-14T07:59:00.000Z", 58),
   ];
 
-  await logger.step("最新记录摘要只应在组头出现一次");
-  const tree = SidebarView({ controller });
-  assert.equal(countElementsWithText(tree, "history-group-url", "https://api.example.com/member"), 1);
-  assert.equal(countElementsWithText(tree, "history-record-caption", "https://api.example.com/member"), 0);
-
-  await logger.step("最新记录应显示序号, 方便与编辑区上下文保持一致");
-  assert.equal(findElement(tree, (element) => readText(element.props.children as React.ReactNode) === "#1").props.className, "history-order-pill");
-
-  await logger.step("旧记录被选中时, 子项应携带 active class");
-  const activeHistoryItem = findElement(tree, (element) => element.props.className === "history-record-item active");
+  await logger.step("记录页应直接显示 METHOD + URL, 且右键菜单仍可挂接");
+  const tree = SidebarView({
+    controller,
+    onHistoryRecordContextMenu: () => {
+      actions.historyMenu += 1;
+    },
+  });
+  assert.equal(findElement(tree, (element) => element.props.className === "compact-request-url" && readText(element.props.children as React.ReactNode) === "https://api.example.com/member").props.className, "compact-request-url");
+  const activeHistoryItem = findElement(tree, (element) => element.props.className === "list-item compact-request-item active");
   assert.equal(readText(activeHistoryItem.props.children as React.ReactNode).includes("https://api.example.com/member-retry"), true);
+  invokeContextMenu(activeHistoryItem);
+  assert.equal(actions.historyMenu, 1);
 
-  await logger.conclusion("记录页的去重和选中态输出稳定");
+  await logger.conclusion("记录页紧凑历史列表和右键入口已得到自动化保护");
 });
 
 function createWorkbenchController(): WorkbenchController {
@@ -254,6 +232,7 @@ function createWorkbenchController(): WorkbenchController {
         collectionId: collection.id,
         collectionName: collection.name,
         requests: [request],
+        expanded: true,
       },
     ],
     favoriteRequests: [],
@@ -275,6 +254,7 @@ function createWorkbenchController(): WorkbenchController {
     setSidebarTab: () => undefined,
     setSidebarKeyword: () => undefined,
     toggleHistoryGroup: () => undefined,
+    toggleCollectionGroup: () => undefined,
     createRequest: () => undefined,
     createCollection: () => undefined,
     renameCollection: () => undefined,
@@ -286,6 +266,8 @@ function createWorkbenchController(): WorkbenchController {
     deleteRequest: () => undefined,
     toggleFavorite: () => undefined,
     selectHistory: () => undefined,
+    promptSaveHistoryToCollection: () => undefined,
+    saveHistoryToCollection: () => undefined,
     setEnvironmentDraftName: () => undefined,
     updateEnvironmentVariable: () => undefined,
     addEnvironmentVariable: () => undefined,
@@ -321,12 +303,15 @@ function createWorkbenchController(): WorkbenchController {
 function createSidebarController(actions: {
   requestMenu: number;
   collectionMenu: number;
+  historyMenu: number;
   environmentMenu: number;
   variableMenu: number;
 }): SidebarController {
   const collection = createDefaultCollection("默认集合");
   const request = createDefaultRequest("获取会员信息", collection.id);
   request.favorite = true;
+  request.method = "POST";
+  request.url = "https://api.example.com/member";
   const environment = createDefaultEnvironment("prod");
   const viewState: HttpClientViewState = {
     ...createFallbackViewState(),
@@ -354,6 +339,7 @@ function createSidebarController(actions: {
         collectionId: collection.id,
         collectionName: collection.name,
         requests: [request],
+        expanded: true,
       },
     ],
     favoriteRequests: [request],
@@ -377,6 +363,7 @@ function createSidebarController(actions: {
     },
     setKeyword: () => undefined,
     toggleHistoryGroup: () => undefined,
+    toggleCollectionGroup: () => undefined,
     createRequest: () => undefined,
     createCollection: () => undefined,
     renameCollection: () => undefined,
@@ -388,6 +375,8 @@ function createSidebarController(actions: {
     deleteRequest: () => undefined,
     toggleFavorite: () => undefined,
     selectHistory: () => undefined,
+    promptSaveHistoryToCollection: () => undefined,
+    saveHistoryToCollection: () => undefined,
     selectEnvironment: () => undefined,
     setEnvironmentDraftName: () => undefined,
     updateEnvironmentVariable: () => undefined,
@@ -462,19 +451,6 @@ function readText(node: React.ReactNode): string {
     return "";
   }
   return readText((node as React.ReactElement<Record<string, unknown>>).props.children as React.ReactNode);
-}
-
-function countElementsWithText(node: React.ReactNode, className: string, expectedText: string): number {
-  let count = 0;
-  visitNode(node, (element) => {
-    if (element.props.className !== className) {
-      return;
-    }
-    if (readText(element.props.children as React.ReactNode) === expectedText) {
-      count += 1;
-    }
-  });
-  return count;
 }
 
 function invokeClick(element: React.ReactElement<Record<string, unknown>>): void {

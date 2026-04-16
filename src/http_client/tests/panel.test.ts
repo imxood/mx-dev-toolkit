@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import Module = require("node:module");
 import { test } from "node:test";
 import {
+  createDefaultCollection,
   createDefaultConfigFile,
   createDefaultRequest,
   ExtensionToWebviewMessage,
@@ -533,6 +534,203 @@ test("panel: 选择历史消息只更新 Host 会话态, 不再构建整包 view
   await logger.conclusion("selectHistory 已保持 local-first 热路径, 历史浏览不再改写持久化锚点");
 });
 
+test("panel: 历史记录可直接保存到目标集合", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证工作台右键保存历史记录时, Host 会把该历史请求复制到指定集合并切到新请求");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const targetCollection = createDefaultCollection("归档集合");
+  config.collections.push(targetCollection);
+
+  const historyRequest = createDefaultRequest("历史请求", config.collections[0].id);
+  historyRequest.method = "POST";
+  historyRequest.url = "https://api.example.com/member/history";
+  const history = {
+    id: "history-1",
+    request: historyRequest,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: 200,
+      statusText: "OK",
+      durationMs: 18,
+      ok: true,
+      sizeBytes: 64,
+    },
+  };
+
+  const messages: ExtensionToWebviewMessage[] = [];
+  const savedRequests: Array<{ id: string; collectionId: string | null; url: string }> = [];
+  let activeRequestId: string | null = null;
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => ({
+        config,
+        history: [history],
+        activeRequestId,
+        activeEnvironmentId: null,
+      }),
+      getActiveRequestId: () => activeRequestId,
+      getHistoryItem: (historyId: string) => (historyId === history.id ? history : null),
+      saveRequest: async (request: { id: string; collectionId: string | null; url: string; name: string }) => {
+        savedRequests.push({
+          id: request.id,
+          collectionId: request.collectionId,
+          url: request.url,
+        });
+        activeRequestId = request.id;
+        config.requests.push(request as never);
+        return request as never;
+      },
+      setActiveRequestId: async (requestId: string | null) => {
+        activeRequestId = requestId;
+      },
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  (controller as unknown as { panel: unknown }).panel = {
+    webview: {
+      postMessage: async (message: ExtensionToWebviewMessage) => {
+        messages.push(message);
+        return true;
+      },
+    },
+  };
+
+  await logger.step("触发 saveHistoryToCollection, Host 应复制一份新请求并刷新当前工作台状态");
+  await (
+    controller as unknown as {
+      handleMessage: (message: { type: "httpClient/saveHistoryToCollection"; payload: { historyId: string; collectionId: string } }) => Promise<void>;
+    }
+  ).handleMessage({
+    type: "httpClient/saveHistoryToCollection",
+    payload: { historyId: history.id, collectionId: targetCollection.id },
+  });
+
+  await logger.verify(`保存后请求数: ${savedRequests.length}, state 消息数: ${messages.filter((message) => message.type === "httpClient/state").length}`);
+  assert.equal(savedRequests.length, 1);
+  assert.equal(savedRequests[0].collectionId, targetCollection.id);
+  assert.equal(savedRequests[0].url, historyRequest.url);
+  assert.notEqual(savedRequests[0].id, historyRequest.id);
+  assert.equal((controller as unknown as { currentDraft: { id: string } | null }).currentDraft?.id, savedRequests[0].id);
+  assert.equal((controller as unknown as { selectedHistoryId: string | null }).selectedHistoryId, null);
+  assert.ok(messages.some((message) => message.type === "httpClient/state"));
+
+  await logger.conclusion("历史记录已可直接复制到指定集合, 并切换为新的稳定请求");
+});
+
+test("panel: 保存历史记录到集合时可先新建集合再落请求", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证工作台右键保存历史记录时, 可通过 QuickPick 选择新建集合并在输入名称后完成保存");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const historyRequest = createDefaultRequest("历史请求", config.collections[0].id);
+  historyRequest.method = "POST";
+  historyRequest.url = "https://api.example.com/member/history";
+  const history = {
+    id: "history-1",
+    request: historyRequest,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: 200,
+      statusText: "OK",
+      durationMs: 18,
+      ok: true,
+      sizeBytes: 64,
+    },
+  };
+
+  const messages: ExtensionToWebviewMessage[] = [];
+  const createdCollections: Array<{ id: string; name: string }> = [];
+  const savedRequests: Array<{ id: string; collectionId: string | null }> = [];
+  let activeRequestId: string | null = null;
+
+  setMockShowQuickPick(async (items: Array<{ label: string; collectionId?: string }>) => {
+    assert.ok(items.some((item) => item.collectionId === "__create__"));
+    return items.find((item) => item.collectionId === "__create__") ?? null;
+  });
+  setMockShowInputBox(async (options?: { value?: string }) => {
+    if (options?.value !== undefined) {
+      return options.value;
+    }
+    return "新建归档集合";
+  });
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => ({
+        config,
+        history: [history],
+        activeRequestId,
+        activeEnvironmentId: null,
+      }),
+      getActiveRequestId: () => activeRequestId,
+      getHistoryItem: (historyId: string) => (historyId === history.id ? history : null),
+      createCollection: async (name: string) => {
+        const collection = createDefaultCollection(name);
+        createdCollections.push({ id: collection.id, name: collection.name });
+        config.collections.push(collection);
+        return collection;
+      },
+      saveRequest: async (request: { id: string; collectionId: string | null }) => {
+        savedRequests.push({ id: request.id, collectionId: request.collectionId });
+        activeRequestId = request.id;
+        config.requests.push(request as never);
+        return request as never;
+      },
+      setActiveRequestId: async (requestId: string | null) => {
+        activeRequestId = requestId;
+      },
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  (controller as unknown as { panel: unknown }).panel = {
+    webview: {
+      postMessage: async (message: ExtensionToWebviewMessage) => {
+        messages.push(message);
+        return true;
+      },
+    },
+  };
+
+  await logger.step("触发 promptSaveHistoryToCollection, Host 应先创建集合, 再把历史请求保存进去");
+  await (
+    controller as unknown as {
+      handleMessage: (message: { type: "httpClient/promptSaveHistoryToCollection"; payload: { historyId: string } }) => Promise<void>;
+    }
+  ).handleMessage({
+    type: "httpClient/promptSaveHistoryToCollection",
+    payload: { historyId: history.id },
+  });
+
+  await logger.verify(`新建集合数: ${createdCollections.length}, 保存请求数: ${savedRequests.length}`);
+  assert.equal(createdCollections.length, 1);
+  assert.equal(createdCollections[0].name, "新建归档集合");
+  assert.equal(savedRequests.length, 1);
+  assert.equal(savedRequests[0].collectionId, createdCollections[0].id);
+  assert.ok(messages.some((message) => message.type === "httpClient/state"));
+
+  setMockShowQuickPick(async () => null);
+  setMockShowInputBox(async () => undefined);
+  await logger.conclusion("QuickPick + InputBox 路径可完成新建集合并保存历史请求");
+});
+
 test("panel: 浏览历史后只有继续编辑草稿才会后台刷新 activeRequestId", async () => {
   const logger = await createTestLogger("http_client_panel.txt");
   await logger.flow("验证历史浏览与稳定请求持久化解耦, 只有基于历史继续编辑时才会在后台刷新 activeRequestId");
@@ -617,7 +815,7 @@ test("panel: 浏览历史后只有继续编辑草稿才会后台刷新 activeReq
 
 test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", async () => {
   const logger = await createTestLogger("http_client_panel.txt");
-  await logger.flow("验证工作台点击编辑响应后, Host 会在 VS Code 中打开一个新的临时文档");
+  await logger.flow("验证工作台点击编辑响应后, Host 会在当前工作台所在标签组中打开一个新的临时文档");
 
   const HttpClientPanelController = loadPanelController();
   const config = createDefaultConfigFile();
@@ -653,8 +851,11 @@ test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", asyn
     } as never,
     createToastServiceStub() as never
   );
+  (controller as unknown as { panel: unknown }).panel = {
+    viewColumn: 1,
+  };
 
-  await logger.step("发送 openResponseEditor 消息, Host 应打开新文档并展示");
+  await logger.step("发送 openResponseEditor 消息, Host 应沿用当前 panel 的标签组打开新文档");
   await (
     controller as unknown as {
       handleMessage: (message: { type: "httpClient/openResponseEditor"; payload: { content: string; language: string } }) => Promise<void>;
@@ -672,7 +873,7 @@ test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", asyn
   assert.equal(shownDocuments.length, 1);
   assert.deepEqual(shownDocuments[0].options, {
     preview: false,
-    viewColumn: 2,
+    viewColumn: 1,
   });
 
   setMockOpenTextDocument(async (options: { content: string; language: string }) => ({
@@ -681,7 +882,7 @@ test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", asyn
   }));
   setMockShowTextDocument(async () => undefined);
 
-  await logger.conclusion("编辑响应会打开 VS Code 临时文档, 不依赖 Webview 内置编辑器");
+  await logger.conclusion("编辑响应会在当前工作台所在标签组中打开 VS Code 临时文档, 不再分离到旁侧标签组");
 });
 
 function loadPanelController(): typeof import("../panel").HttpClientPanelController {
@@ -728,6 +929,7 @@ function createVscodeStub(): unknown {
   return {
     EventEmitter,
     ViewColumn: {
+      Active: -1,
       One: 1,
       Beside: 2,
     },
@@ -736,6 +938,7 @@ function createVscodeStub(): unknown {
     },
     window: {
       showInputBox: (options?: { value?: string }) => mockShowInputBox(options),
+      showQuickPick: (items: Array<{ label: string; collectionId?: string }>) => mockShowQuickPick(items),
       showWarningMessage: (message: string, _options?: unknown, ...items: string[]) => mockShowWarningMessage(message, items),
       showInformationMessage: (_message: string) => Promise.resolve(undefined),
       showErrorMessage: (_message: string) => Promise.resolve(undefined),
@@ -769,6 +972,7 @@ function delay(timeoutMs: number): Promise<void> {
 }
 
 let mockShowInputBox: (options?: { value?: string }) => Promise<string | undefined> = async () => undefined;
+let mockShowQuickPick: (items: Array<{ label: string; collectionId?: string }>) => Promise<{ label: string; collectionId?: string } | null> = async () => null;
 let mockShowWarningMessage: (message: string, items: string[]) => Promise<string | undefined> = async () => undefined;
 let mockOpenTextDocument: (options: { content: string; language: string }) => Promise<unknown> = async (options) => ({
   uri: "untitled:default",
@@ -778,6 +982,12 @@ let mockShowTextDocument: (document: unknown, options?: unknown) => Promise<void
 
 function setMockShowInputBox(handler: (options?: { value?: string }) => Promise<string | undefined>): void {
   mockShowInputBox = handler;
+}
+
+function setMockShowQuickPick(
+  handler: (items: Array<{ label: string; collectionId?: string }>) => Promise<{ label: string; collectionId?: string } | null>
+): void {
+  mockShowQuickPick = handler;
 }
 
 function setMockShowWarningMessage(handler: (message: string, items: string[]) => Promise<string | undefined>): void {

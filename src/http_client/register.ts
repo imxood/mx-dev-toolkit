@@ -33,27 +33,22 @@ export function registerHttpClient(
     controller,
     statusBarItem,
     vscode.commands.registerCommand(CMD_HTTP_OPEN, async () => {
-      channel.show();
       channel.appendLine("[HttpClient] open workbench");
       await controller.show();
     }),
     vscode.commands.registerCommand(CMD_HTTP_SEND, async () => {
-      channel.show();
       channel.appendLine("[HttpClient] command send current");
       await controller.triggerCommand("send");
     }),
     vscode.commands.registerCommand(CMD_HTTP_SAVE, async () => {
-      channel.show();
       channel.appendLine("[HttpClient] command save current");
       await controller.triggerCommand("save");
     }),
     vscode.commands.registerCommand(CMD_HTTP_IMPORT_CURL, async () => {
-      channel.show();
       channel.appendLine("[HttpClient] command import curl");
       await controller.triggerCommand("focusCurlImport");
     }),
     vscode.commands.registerCommand(CMD_HTTP_LOAD_TEST, async () => {
-      channel.show();
       channel.appendLine("[HttpClient] command load test");
       await controller.triggerCommand("loadTest");
     })

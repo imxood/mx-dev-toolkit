@@ -13,15 +13,16 @@ import {
   buildEnvironmentItems,
   buildFavoriteRequests,
   buildHistoryGroups,
+  buildVisibleHistoryRecords,
   buildUngroupedRequests,
   formatClock,
   relativeTime,
 } from "../shared/sidebar_model";
 import { createFallbackViewState } from "../shared/workbench_model";
 
-test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", async () => {
+test("sidebar_model: React 侧边栏筛选与折叠模型保持稳定", async () => {
   const logger = await createTestLogger("http_client_sidebar_model.txt");
-  await logger.flow("验证 React 侧边栏共享纯函数与旧侧边栏分组逻辑保持一致");
+  await logger.flow("验证 React 侧边栏共享纯函数的历史筛选, 集合折叠和环境筛选逻辑");
 
   const viewState = createSidebarState();
 
@@ -53,19 +54,26 @@ test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", as
   assert.equal(selectedGroups[1].active, false);
   assert.equal(selectedGroups[1].activeRecordId, null);
 
-  await logger.step("验证集合和未分组请求筛选");
-  const collectionGroups = buildCollectionGroups(viewState.config, "");
+  await logger.step("验证记录页紧凑列表模型, 集合折叠状态和未分组请求筛选");
+  const visibleHistoryRecords = buildVisibleHistoryRecords(viewState, "member", "history-2");
+  assert.equal(visibleHistoryRecords.length, 29);
+  assert.equal(visibleHistoryRecords[1].record.id, "history-2");
+  assert.equal(visibleHistoryRecords[1].active, true);
+
+  const collectionGroups = buildCollectionGroups(viewState.config, "", null, {});
   assert.equal(collectionGroups.length, 1);
   assert.equal(collectionGroups[0].requests.length, 1);
   assert.equal(collectionGroups[0].collectionName, "默认集合");
+  assert.equal(collectionGroups[0].expanded, true);
 
   const favoriteRequests = buildFavoriteRequests(viewState.config, "");
   assert.equal(favoriteRequests.length, 1);
   assert.equal(favoriteRequests[0].name, "获取会员信息");
 
-  const collectionFiltered = buildCollectionGroups(viewState.config, "会员");
+  const collectionFiltered = buildCollectionGroups(viewState.config, "会员", null, { [collectionGroups[0].collectionId]: false });
   assert.equal(collectionFiltered.length, 1);
   assert.equal(collectionFiltered[0].requests[0].name, "获取会员信息");
+  assert.equal(collectionFiltered[0].expanded, false);
 
   const looseRequests = buildUngroupedRequests(viewState.config, "");
   assert.equal(looseRequests.length, 1);
@@ -73,7 +81,7 @@ test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", as
 
   await logger.step("验证未保存草稿会出现在集合列表中");
   const scratchDraft = createDefaultRequest("新请求", collectionGroups[0].collectionId);
-  const scratchCollectionGroups = buildCollectionGroups(viewState.config, "", scratchDraft);
+  const scratchCollectionGroups = buildCollectionGroups(viewState.config, "", scratchDraft, {});
   assert.equal(scratchCollectionGroups[0].requests[0].id, scratchDraft.id);
   assert.equal(scratchCollectionGroups[0].requests[0].name, "新请求");
 
@@ -93,7 +101,7 @@ test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", as
     })
   );
 
-  await logger.verify("最近 30 条聚合, 集合筛选和环境筛选逻辑均符合预期");
+  await logger.verify("历史列表, 集合折叠筛选和环境筛选逻辑均符合预期");
   await logger.conclusion("React 侧边栏共享纯函数已具备稳定回归保护");
 });
 

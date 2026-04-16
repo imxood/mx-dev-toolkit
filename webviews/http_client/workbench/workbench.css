@@ -83,6 +83,8 @@
 .toolbar-heading,
 .toolbar-title-row,
 .toolbar-actions,
+.toolbar-secondary,
+.toolbar-secondary-actions,
 .toolbar-meta,
 .toolbar-side,
 .panel-title-row,
@@ -115,6 +117,8 @@
 
 .toolbar-title-row,
 .toolbar-actions,
+.toolbar-secondary,
+.toolbar-secondary-actions,
 .toolbar-meta,
 .toolbar-side,
 .response-summary,
@@ -201,6 +205,14 @@ h3 {
 
 .toolbar-help-button {
   min-width: 54px;
+}
+
+.toolbar-title-row {
+  justify-content: space-between;
+}
+
+.toolbar-title-row h2 {
+  margin: 0;
 }
 
 .toolbar-meta {
@@ -306,8 +318,25 @@ h3 {
 
 .toolbar-main {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 150px;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
   gap: var(--space-2);
+  align-items: center;
+}
+
+.toolbar-secondary {
+  align-items: center;
+  gap: 20px;
+}
+
+.toolbar-secondary > select {
+  width: 132px;
+  flex: 0 0 132px;
+  max-width: 100%;
+}
+
+.toolbar-secondary-actions {
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .dirty-indicator {
@@ -899,6 +928,7 @@ mark {
   }
 
   .toolbar-main,
+  .toolbar-secondary,
   .meta-grid,
   .summary-grid,
   .load-test-config-grid,
@@ -913,22 +943,10 @@ mark {
     padding: var(--space-3);
   }
 
-  .toolbar-heading {
+  .toolbar-secondary,
+  .toolbar-secondary-actions {
     flex-direction: column;
-  }
-
-  .toolbar-heading-balanced {
-    grid-template-columns: 1fr;
-  }
-
-  .toolbar-center-slot,
-  .toolbar-side-right {
-    justify-content: flex-start;
-  }
-
-  .toolbar-meta {
-    margin-left: 0;
-    justify-content: flex-start;
+    align-items: stretch;
   }
 
   .kv-header {

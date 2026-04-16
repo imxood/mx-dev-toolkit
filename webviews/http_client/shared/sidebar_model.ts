@@ -13,6 +13,7 @@ export interface SidebarUiState {
   activeTab: SidebarTab;
   keyword: string;
   expandedHistoryGroups: Record<string, boolean>;
+  expandedCollectionGroups: Record<string, boolean>;
   selectedHistoryId: string | null;
   selectedEnvironmentId: string | null;
 }
@@ -44,6 +45,8 @@ export type SidebarToExtensionMessage =
   | { type: "httpClientSidebar/toggleFavorite"; payload: { requestId: string; favorite: boolean } }
   | { type: "httpClientSidebar/selectRequest"; payload: { requestId: string } }
   | { type: "httpClientSidebar/selectHistory"; payload: { historyId: string } }
+  | { type: "httpClientSidebar/promptSaveHistoryToCollection"; payload: { historyId: string } }
+  | { type: "httpClientSidebar/saveHistoryToCollection"; payload: { historyId: string; collectionId: string } }
   | { type: "httpClientSidebar/selectEnvironment"; payload: { environmentId: string | null } }
   | { type: "httpClientSidebar/saveEnvironment"; payload: { environment: HttpEnvironmentEntity } }
   | { type: "httpClientSidebar/deleteEnvironment"; payload: { environmentId: string } };
@@ -70,6 +73,12 @@ export interface SidebarCollectionGroup {
   collectionId: string;
   collectionName: string;
   requests: HttpRequestEntity[];
+  expanded: boolean;
+}
+
+export interface SidebarHistoryListItem {
+  record: HttpHistoryRecord;
+  active: boolean;
 }
 
 export interface SidebarEnvironmentItem {
@@ -95,9 +104,31 @@ export function createInitialSidebarUiState(): SidebarUiState {
     activeTab: "activity",
     keyword: "",
     expandedHistoryGroups: {},
+    expandedCollectionGroups: {},
     selectedHistoryId: null,
     selectedEnvironmentId: null,
   };
+}
+
+export function buildVisibleHistoryRecords(
+  viewState: HttpClientViewState,
+  keyword: string,
+  selectedHistoryId: string | null
+): SidebarHistoryListItem[] {
+  const match = createKeywordMatcher(keyword);
+  return viewState.history
+    .slice(0, 30)
+    .filter((record) => {
+      if (!keyword.trim()) {
+        return true;
+      }
+
+      return match(`${record.request.method} ${record.request.url} ${record.request.name} ${record.responseSummary.status ?? "ERR"}`);
+    })
+    .map((record) => ({
+      record,
+      active: record.id === selectedHistoryId,
+    }));
 }
 
 export function buildHistoryGroups(
@@ -162,7 +193,12 @@ export function buildHistoryGroups(
   });
 }
 
-export function buildCollectionGroups(config: HttpClientConfigFile, keyword: string, draft: HttpRequestEntity | null = null): SidebarCollectionGroup[] {
+export function buildCollectionGroups(
+  config: HttpClientConfigFile,
+  keyword: string,
+  draft: HttpRequestEntity | null = null,
+  expandedCollectionGroups: Record<string, boolean> = {}
+): SidebarCollectionGroup[] {
   const match = createKeywordMatcher(keyword);
   const requests = getVisibleRequests(config, draft).slice().sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : -1));
 
@@ -185,6 +221,7 @@ export function buildCollectionGroups(config: HttpClientConfigFile, keyword: str
         collectionId: collection.id,
         collectionName: collection.name,
         requests: members,
+        expanded: expandedCollectionGroups[collection.id] !== false,
       };
     })
     .filter((item): item is SidebarCollectionGroup => Boolean(item));

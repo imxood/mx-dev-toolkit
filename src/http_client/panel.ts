@@ -368,6 +368,12 @@ export class HttpClientPanelController implements vscode.Disposable {
           );
         }
         return;
+      case "httpClient/promptSaveHistoryToCollection":
+        await this.promptSaveHistoryToCollection(message.payload.historyId);
+        return;
+      case "httpClient/saveHistoryToCollection":
+        await this.saveHistoryToCollection(message.payload.historyId, message.payload.collectionId);
+        return;
       case "httpClient/openResponseEditor":
         await this.openResponseEditor(message.payload.content, message.payload.language);
         return;
@@ -747,6 +753,83 @@ export class HttpClientPanelController implements vscode.Disposable {
     return viewState;
   }
 
+  private async saveHistoryToCollection(historyId: string, collectionId: string): Promise<void> {
+    const history = this.store.getHistoryItem(historyId);
+    if (!history) {
+      await this.postError("历史记录不存在");
+      return;
+    }
+
+    const config = await this.store.ensureInitialized();
+    const collection = config.collections.find((item) => item.id === collectionId);
+    if (!collection) {
+      await this.postError("集合不存在");
+      return;
+    }
+
+    try {
+      const now = createNowIsoString();
+      const savedRequest = await this.store.saveRequest({
+        ...cloneRequest(history.request),
+        id: randomUUID(),
+        collectionId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      this.markActiveRequestPersisted(savedRequest.id);
+      this.currentDraft = cloneRequest(savedRequest);
+      this.selectedHistoryId = null;
+      this.dirty = false;
+      this.currentResponse = null;
+      this.responseTab = "body";
+      await this.postState();
+      await this.notifyToast(`已保存到集合: ${collection.name}`, "success");
+    } catch (error) {
+      await this.postError((error as Error).message);
+    }
+  }
+
+  private async promptSaveHistoryToCollection(historyId: string): Promise<void> {
+    const config = await this.store.ensureInitialized();
+    const picked = await vscode.window.showQuickPick(
+      [
+        ...config.collections.map((collection) => ({
+          label: collection.name,
+          description: "已有集合",
+          collectionId: collection.id,
+        })),
+        {
+          label: "$(add) 新建集合",
+          description: "输入集合名称后保存",
+          collectionId: "__create__",
+        },
+      ],
+      {
+        title: "保存到集合",
+        placeHolder: "选择目标集合, 或新建集合",
+        ignoreFocusOut: true,
+      }
+    );
+    if (!picked) {
+      return;
+    }
+
+    let targetCollectionId = picked.collectionId;
+    if (targetCollectionId === "__create__") {
+      const name = await vscode.window.showInputBox({
+        prompt: "请输入新集合名称",
+        ignoreFocusOut: true,
+      });
+      if (!name) {
+        return;
+      }
+      const createdCollection = await this.store.createCollection(name);
+      targetCollectionId = createdCollection.id;
+    }
+
+    await this.saveHistoryToCollection(historyId, targetCollectionId);
+  }
+
   private async startLoadTest(payload: HttpClientLoadTestPayload): Promise<void> {
     this.stopLoadTest();
     const config = await this.store.ensureInitialized();
@@ -834,9 +917,10 @@ export class HttpClientPanelController implements vscode.Disposable {
         content,
         language,
       });
+      const targetViewColumn = this.panel?.viewColumn ?? vscode.ViewColumn.Active;
       await vscode.window.showTextDocument(document, {
         preview: false,
-        viewColumn: vscode.ViewColumn.Beside,
+        viewColumn: targetViewColumn,
       });
     } catch (error) {
       await this.postError(`打开响应编辑页失败: ${(error as Error).message}`);
