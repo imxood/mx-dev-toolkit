@@ -12,6 +12,7 @@ test("webview_state: 生成的 webview 脚本可被浏览器解释执行", async
   const scriptHtml = getWebviewScript({
     config: createDefaultConfigFile(),
     activeRequestId: null,
+    selectedHistoryId: null,
     activeEnvironmentId: null,
     draft: createDefaultRequest("语法检查"),
     history: [],

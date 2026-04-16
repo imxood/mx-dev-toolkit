@@ -11,6 +11,7 @@ import { createTestLogger } from "../../../src/http_client/tests/helpers";
 import {
   buildCollectionGroups,
   buildEnvironmentItems,
+  buildFavoriteRequests,
   buildHistoryGroups,
   buildUngroupedRequests,
   formatClock,
@@ -25,27 +26,42 @@ test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", as
   const viewState = createSidebarState();
 
   await logger.step("验证最近 30 条历史记录按请求聚合且默认展开最新分组");
-  const groups = buildHistoryGroups(viewState, "", {});
+  const groups = buildHistoryGroups(viewState, "", {}, null);
   assert.equal(groups.length, 2);
   assert.equal(groups[0].title, "获取会员信息");
   assert.equal(groups[0].totalCount, 29);
   assert.equal(groups[0].expanded, true);
   assert.equal(groups[0].records[0].id, "history-1");
+  assert.equal(groups[0].active, true);
+  assert.equal(groups[0].activeRecordId, "history-1");
   assert.equal(groups[1].title, "查询设备状态");
   assert.equal(groups[1].totalCount, 1);
   assert.equal(groups[1].expanded, false);
+  assert.equal(groups[1].active, false);
+  assert.equal(groups[1].activeRecordId, null);
 
   await logger.step("验证历史关键字筛选和展开状态继承");
-  const filteredGroups = buildHistoryGroups(viewState, "设备", { [groups[0].key]: true });
+  const filteredGroups = buildHistoryGroups(viewState, "设备", { [groups[0].key]: true }, null);
   assert.equal(filteredGroups.length, 1);
   assert.equal(filteredGroups[0].title, "查询设备状态");
   assert.equal(filteredGroups[0].expanded, true);
+
+  await logger.step("验证点击旧历史记录后, 选中态切换到对应子记录");
+  const selectedGroups = buildHistoryGroups(viewState, "", { [groups[0].key]: true }, "history-3");
+  assert.equal(selectedGroups[0].active, true);
+  assert.equal(selectedGroups[0].activeRecordId, "history-3");
+  assert.equal(selectedGroups[1].active, false);
+  assert.equal(selectedGroups[1].activeRecordId, null);
 
   await logger.step("验证集合和未分组请求筛选");
   const collectionGroups = buildCollectionGroups(viewState.config, "");
   assert.equal(collectionGroups.length, 1);
   assert.equal(collectionGroups[0].requests.length, 1);
   assert.equal(collectionGroups[0].collectionName, "默认集合");
+
+  const favoriteRequests = buildFavoriteRequests(viewState.config, "");
+  assert.equal(favoriteRequests.length, 1);
+  assert.equal(favoriteRequests[0].name, "获取会员信息");
 
   const collectionFiltered = buildCollectionGroups(viewState.config, "会员");
   assert.equal(collectionFiltered.length, 1);
@@ -54,6 +70,12 @@ test("sidebar_model: React 侧边栏分组与筛选逻辑保持现状一致", as
   const looseRequests = buildUngroupedRequests(viewState.config, "");
   assert.equal(looseRequests.length, 1);
   assert.equal(looseRequests[0].name, "查询设备状态");
+
+  await logger.step("验证未保存草稿会出现在集合列表中");
+  const scratchDraft = createDefaultRequest("新请求", collectionGroups[0].collectionId);
+  const scratchCollectionGroups = buildCollectionGroups(viewState.config, "", scratchDraft);
+  assert.equal(scratchCollectionGroups[0].requests[0].id, scratchDraft.id);
+  assert.equal(scratchCollectionGroups[0].requests[0].name, "新请求");
 
   await logger.step("验证环境筛选和时间格式化工具");
   const environmentItems = buildEnvironmentItems(viewState, "prod");
@@ -84,6 +106,7 @@ function createSidebarState(): HttpClientViewState {
   const requestDevice = createDefaultRequest("查询设备状态", null);
   requestMember.method = "POST";
   requestMember.url = "http://iot.iotim.com/ehong/tool/GetMemberInfo";
+  requestMember.favorite = true;
   requestDevice.method = "GET";
   requestDevice.url = "https://api.example.com/device/status";
 

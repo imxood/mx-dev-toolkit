@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import { HttpClientPanelController } from "./panel";
-import { HttpClientSidebarProvider } from "./sidebar_view";
 import { HttpClientStore } from "./store";
 import { ToastService } from "../toast/service";
 
@@ -23,16 +22,16 @@ export function registerHttpClient(
 
   const store = new HttpClientStore(workspaceRoot, context.workspaceState);
   const controller = new HttpClientPanelController(context, channel, store, toastService);
-  const sidebarProvider = new HttpClientSidebarProvider(controller, toastService);
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 85);
+  statusBarItem.name = "Mx HTTP Client";
+  statusBarItem.text = "$(globe) HTTP Client";
+  statusBarItem.tooltip = "打开 HTTP Client 工作台";
+  statusBarItem.command = CMD_HTTP_OPEN;
+  statusBarItem.show();
 
   context.subscriptions.push(
     controller,
-    sidebarProvider,
-    vscode.window.registerWebviewViewProvider("mx-dev-toolkit-httpClientLauncher", sidebarProvider, {
-      webviewOptions: {
-        retainContextWhenHidden: true,
-      },
-    }),
+    statusBarItem,
     vscode.commands.registerCommand(CMD_HTTP_OPEN, async () => {
       channel.show();
       channel.appendLine("[HttpClient] open workbench");

@@ -5,7 +5,7 @@ import type {
   HttpHistoryRecord,
   HttpRequestEntity,
 } from "../../../src/http_client/types";
-import type { ToastToWebviewMessage } from "../../../src/toast/types";
+import type { ToastNotifyMessage, ToastToWebviewMessage } from "../../../src/toast/types";
 
 export type SidebarTab = "activity" | "collections" | "environments";
 
@@ -13,16 +13,40 @@ export interface SidebarUiState {
   activeTab: SidebarTab;
   keyword: string;
   expandedHistoryGroups: Record<string, boolean>;
+  selectedHistoryId: string | null;
+  selectedEnvironmentId: string | null;
+}
+
+export interface SidebarEnvironmentDraftRow {
+  id: string;
+  key: string;
+  value: string;
+}
+
+export interface SidebarEnvironmentDraft {
+  environmentId: string;
+  name: string;
+  variables: SidebarEnvironmentDraftRow[];
+  dirty: boolean;
 }
 
 export type SidebarToExtensionMessage =
+  | ToastNotifyMessage
   | { type: "httpClientSidebar/init" }
   | { type: "httpClientSidebar/createRequest"; payload?: { collectionId?: string | null } }
   | { type: "httpClientSidebar/createCollection" }
   | { type: "httpClientSidebar/createEnvironment" }
+  | { type: "httpClientSidebar/renameCollection"; payload: { collectionId: string } }
+  | { type: "httpClientSidebar/deleteCollection"; payload: { collectionId: string } }
+  | { type: "httpClientSidebar/renameRequest"; payload: { requestId: string } }
+  | { type: "httpClientSidebar/duplicateRequest"; payload: { requestId: string } }
+  | { type: "httpClientSidebar/deleteRequest"; payload: { requestId: string } }
+  | { type: "httpClientSidebar/toggleFavorite"; payload: { requestId: string; favorite: boolean } }
   | { type: "httpClientSidebar/selectRequest"; payload: { requestId: string } }
   | { type: "httpClientSidebar/selectHistory"; payload: { historyId: string } }
-  | { type: "httpClientSidebar/selectEnvironment"; payload: { environmentId: string | null } };
+  | { type: "httpClientSidebar/selectEnvironment"; payload: { environmentId: string | null } }
+  | { type: "httpClientSidebar/saveEnvironment"; payload: { environment: HttpEnvironmentEntity } }
+  | { type: "httpClientSidebar/deleteEnvironment"; payload: { environmentId: string } };
 
 export type ExtensionToSidebarMessage =
   | { type: "httpClientSidebar/state"; payload: HttpClientViewState }
@@ -39,6 +63,7 @@ export interface SidebarHistoryGroup {
   totalCount: number;
   expanded: boolean;
   active: boolean;
+  activeRecordId: string | null;
 }
 
 export interface SidebarCollectionGroup {
@@ -52,21 +77,37 @@ export interface SidebarEnvironmentItem {
   active: boolean;
 }
 
+function getVisibleRequests(config: HttpClientConfigFile, draft: HttpRequestEntity | null = null): HttpRequestEntity[] {
+  const requests = config.requests.map((request) => ({ ...request }));
+  if (!draft) {
+    return requests;
+  }
+
+  if (requests.some((request) => request.id === draft.id)) {
+    return requests;
+  }
+
+  return [draft, ...requests];
+}
+
 export function createInitialSidebarUiState(): SidebarUiState {
   return {
     activeTab: "activity",
     keyword: "",
     expandedHistoryGroups: {},
+    selectedHistoryId: null,
+    selectedEnvironmentId: null,
   };
 }
 
 export function buildHistoryGroups(
   viewState: HttpClientViewState,
   keyword: string,
-  expandedHistoryGroups: Record<string, boolean>
+  expandedHistoryGroups: Record<string, boolean>,
+  selectedHistoryId: string | null
 ): SidebarHistoryGroup[] {
   const recentItems = viewState.history.slice(0, 30);
-  const grouped = new Map<string, Omit<SidebarHistoryGroup, "totalCount" | "expanded" | "active">>();
+  const grouped = new Map<string, Omit<SidebarHistoryGroup, "totalCount" | "expanded" | "active" | "activeRecordId">>();
 
   recentItems.forEach((item) => {
     const key = getHistoryGroupKey(item);
@@ -105,17 +146,25 @@ export function buildHistoryGroups(
     .sort((left, right) => (left.latestRecord.executedAt < right.latestRecord.executedAt ? 1 : -1));
 
   const hasExpanded = groups.some((group) => expandedHistoryGroups[group.key]);
-  return groups.map((group, index) => ({
-    ...group,
-    totalCount: group.records.length,
-    expanded: hasExpanded ? Boolean(expandedHistoryGroups[group.key]) : index === 0,
-    active: Boolean(group.requestId && viewState.activeRequestId === group.requestId),
-  }));
+  return groups.map((group, index) => {
+    const selectedRecordId = group.records.find((record) => record.id === selectedHistoryId)?.id ?? null;
+    const fallbackRecordId =
+      !selectedHistoryId && group.requestId && viewState.activeRequestId === group.requestId ? group.latestRecord.id : null;
+    const activeRecordId = selectedRecordId ?? fallbackRecordId;
+
+    return {
+      ...group,
+      totalCount: group.records.length,
+      expanded: hasExpanded ? Boolean(expandedHistoryGroups[group.key]) : index === 0,
+      activeRecordId,
+      active: Boolean(activeRecordId),
+    };
+  });
 }
 
-export function buildCollectionGroups(config: HttpClientConfigFile, keyword: string): SidebarCollectionGroup[] {
+export function buildCollectionGroups(config: HttpClientConfigFile, keyword: string, draft: HttpRequestEntity | null = null): SidebarCollectionGroup[] {
   const match = createKeywordMatcher(keyword);
-  const requests = config.requests.slice().sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : -1));
+  const requests = getVisibleRequests(config, draft).slice().sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : -1));
 
   return config.collections
     .map((collection) => {
@@ -141,9 +190,9 @@ export function buildCollectionGroups(config: HttpClientConfigFile, keyword: str
     .filter((item): item is SidebarCollectionGroup => Boolean(item));
 }
 
-export function buildUngroupedRequests(config: HttpClientConfigFile, keyword: string): HttpRequestEntity[] {
+export function buildUngroupedRequests(config: HttpClientConfigFile, keyword: string, draft: HttpRequestEntity | null = null): HttpRequestEntity[] {
   const match = createKeywordMatcher(keyword);
-  return config.requests
+  return getVisibleRequests(config, draft)
     .slice()
     .sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : -1))
     .filter((request) => !keyword.trim() || match(`${request.name} ${request.url}`))
@@ -166,6 +215,15 @@ export function buildEnvironmentItems(viewState: HttpClientViewState, keyword: s
       environment,
       active: environment.id === viewState.activeEnvironmentId,
     }));
+}
+
+export function buildFavoriteRequests(config: HttpClientConfigFile, keyword: string, draft: HttpRequestEntity | null = null): HttpRequestEntity[] {
+  const match = createKeywordMatcher(keyword);
+  return getVisibleRequests(config, draft)
+    .slice()
+    .sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : -1))
+    .filter((request) => request.favorite)
+    .filter((request) => !keyword.trim() || match(`${request.name} ${request.url} ${request.method}`));
 }
 
 export function createKeywordMatcher(keyword: string): (value: string) => boolean {

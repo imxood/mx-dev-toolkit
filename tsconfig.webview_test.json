@@ -4,6 +4,7 @@
     "noEmit": false,
     "outDir": "out-tests-webview",
     "rootDir": ".",
+    "jsx": "react-jsx",
     "lib": [
       "ES2022",
       "DOM"

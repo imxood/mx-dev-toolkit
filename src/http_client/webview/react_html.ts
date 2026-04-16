@@ -38,7 +38,9 @@ function createReactHtml(
   }
 ): string {
   const scriptUri = getWebviewAssetUri(webview, `${input.surface}.js`);
-  const cssUri = getWebviewAssetUri(webview, `${input.surface}.css`);
+  const cssLinks = getSurfaceCssAssets(input.surface)
+    .map((name) => `<link rel="stylesheet" href="${getWebviewAssetUri(webview, name)}" />`)
+    .join("\n      ");
   const bootstrap = serializeBootstrap({
     buildId: HTTP_CLIENT_WEBVIEW_BUILD_ID,
     surface: input.surface,
@@ -55,7 +57,7 @@ function createReactHtml(
       />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>HTTP Client</title>
-      <link rel="stylesheet" href="${cssUri}" />
+      ${cssLinks}
       <style>${TOAST_HOST_STYLES}</style>
     </head>
     <body>
@@ -94,4 +96,12 @@ function getWebviewAssetUri(webview: vscode.Webview, name: string): string {
   }
 
   return fileUri.toString();
+}
+
+function getSurfaceCssAssets(surface: ReactSurface): string[] {
+  if (surface === "workbench") {
+    return ["workbench.css", "SidebarApp.css"];
+  }
+
+  return ["SidebarApp.css"];
 }

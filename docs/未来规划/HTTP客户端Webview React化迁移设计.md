@@ -1,530 +1,140 @@
-# HTTP 客户端 Webview React 化迁移设计
+# HTTP 客户端 Webview React 化迁移设计（归档）
 
 最后更新: 2026-04-14
+状态: 已完成 / 迁移归档
 
 ## 1. 文档定位
 
-本文档只讨论 `HTTP Client` 的 Webview 技术栈迁移, 不讨论产品功能扩展和视觉改版.
+本文档保留为 HTTP Client React 化迁移的历史设计记录。
 
-当前正式事实源如下:
+它描述的是“这次迁移最终怎样落地”, 而不是当前正式事实源。当前正式实现请以 `docs/HTTP客户端设计.md` 为准。
 
-- 现状设计: [../HTTP客户端设计.md](../HTTP客户端设计.md)
-- 当前稳定基线提交: `7813a4c`
+## 2. 迁移目标
 
-本文档的唯一目标是:
+这次迁移的目标不是简单替换技术栈, 而是在不破坏宿主侧业务边界的前提下, 完成 Webview UI 的结构升级。
 
-1. 在技术实现上从当前的字符串模板 Webview 迁移到 `React + TailwindCSS + TypeScript`.
-2. 在迁移过程中保持当前功能完全一致.
-3. 在迁移过程中保持当前 UI 完全一致.
-4. 保持现有消息协议, 宿主逻辑和数据模型不变.
+目标包括:
 
-## 2. 当前实现现状
+- 将 HTTP Client 主 UI 从旧宿主内联 Webview 路径迁移到 React
+- 保留宿主层的 store / resolver / runner / load_runner / curl_import / 消息桥职责
+- 同时支持工作台与侧边栏两个运行表面
+- 用 Vite 构建产物替代旧的单体字符串模板 UI 输出
+- 保留统一 ToastService 和原生消息回退策略
 
-当前实现并不是 React 架构, 而是扩展宿主侧以 TypeScript 生成 Webview HTML, 并内联脚本和样式.
+## 3. 最终落地方案
 
-当前关键入口如下:
+### 3.1 宿主层不变的部分
 
-- 工作台 HTML 组装: `src/http_client/webview/index.ts`
-- 工作台脚本生成: `src/http_client/webview/state.ts`
-- 侧边栏 HTML 与脚本: `src/http_client/sidebar_view.ts`
-- 协议与视图模型: `src/http_client/types.ts`
+迁移后仍由扩展宿主负责:
 
-当前方案已经可用, 但随着功能增加, 有以下客观问题:
+- 命令注册
+- 工作台 `WebviewPanel` 生命周期
+- 侧边栏 `WebviewView` 生命周期
+- 请求状态、环境、历史、收藏等事实源
+- 普通请求执行与压测执行
+- cURL 导入
+- 输出日志与 Toast 调度
 
-1. 页面状态越来越多, 手写 DOM 更新与事件分发的维护成本持续升高.
-2. 页面结构较长, 局部改动容易影响整体渲染和脚本稳定性.
-3. Toast, 响应视图, 记录分组, 发送状态, 压测状态等交互已经具备组件化条件.
-4. 后续若继续做 UI 收口和交互打磨, 原生字符串拼接会明显降低迭代效率.
+### 3.2 新的前端结构
 
-## 3. 迁移硬约束
+最终前端落地到 `webviews/http_client/`:
 
-本次迁移必须满足以下硬约束. 任何不满足这些约束的方案都不应实施.
+- `workbench/main.tsx`
+- `sidebar/main.tsx`
+- `shared/bootstrap.ts`
+- `shared/vscode.ts`
+- `shared/workbench_model.ts`
+- `shared/sidebar_model.ts`
+- `styles/tokens.css`
 
-### 3.1 功能一致
+构建输出到 `media/http_client/`。
 
-- 请求编辑, 发送, 保存, 导入 cURL, 环境切换, 历史恢复, 压测, 响应展示, Toast 提示等能力必须保持完整.
-- 现有日志链路, `responseAck` 自愈机制, 历史分组策略, JSON 专业格式化方案必须保留.
+### 3.3 新的宿主装载方式
 
-### 3.2 UI 一致
+宿主侧新增并启用了 React 装载器:
 
-- 页面结构保持现状, 不做主动改版.
-- 文案, 标签顺序, 区块划分, 按钮位置, 间距层级, 桌面化视觉密度都必须以当前版本为基线.
-- Tailwind 只是实现手段, 不是新的视觉来源.
+- `src/http_client/webview/react_html.ts`
+- `src/http_client/webview/index.ts`
+- `src/http_client/sidebar_view.ts`
 
-### 3.3 协议一致
+最终运行路径:
 
-- 扩展宿主与 Webview 的消息协议继续复用现有定义.
-- 现有 `httpClient/*` 与 `mxToast/*` 消息类型不改名, 不改语义, 不改时序.
+- 工作台 -> `getReactWorkbenchHtml(...)`
+- 侧边栏 -> `getReactSidebarHtml(...)`
 
-### 3.4 宿主逻辑不动
+HTML 外壳负责:
 
-以下部分不在本次迁移改造范围内:
+- 引入 `workbench.js` / `sidebar.js`
+- 引入对应 CSS
+- 注入 `window.__MX_HTTP_CLIENT_BOOTSTRAP__`
+- 注入统一 Toast host
+- 生成 CSP 与 nonce
 
-- `src/http_client/panel.ts`
-- `src/http_client/runner.ts`
-- `src/http_client/register.ts`
-- 持久化存储逻辑
-- 环境变量解析逻辑
-- 压测执行逻辑
-- `keil` 与 `selection` 模块
+## 4. 关键设计决定
 
-### 3.5 构建链保持轻量
+### 4.1 保留宿主事实源
 
-- 不引入与当前闭环无关的大型前端工程体系.
-- 不使用运行时 CDN.
-- 不引入第三方 UI 组件库.
-- 不引入 CSS-in-JS.
-
-## 4. 迁移范围
-
-### 4.1 纳入范围
-
-- HTTP Client 工作台 Webview
-- HTTP Client 侧边栏 Webview
-- Webview 内部 Toast 渲染层
-- Webview 构建与资源装载方式
-
-### 4.2 不纳入范围
-
-- 视觉重设计
-- 交互改版
-- 新增功能
-- 协议重构
-- 宿主层架构重写
-- 文档事实源切换
-
-## 5. 技术方案选择
-
-### 5.1 前端框架
-
-选型:
-
-- `React`
-- `TypeScript`
-- `TailwindCSS`
-
-选择理由:
-
-1. `React` 适合承载当前已经形成规模的组件树和状态切换.
-2. `TypeScript` 可继续与现有宿主类型系统对齐.
-3. `TailwindCSS` 适合作为构建期样式组织工具, 便于在不改视觉的前提下整理布局和密度规则.
-
-### 5.2 Webview 构建选择 Vite
-
-本项目的最优工程方案不是单一构建器覆盖全部代码, 而是按运行环境分离:
-
-- `extension host`: 继续使用现有 `esbuild`
-- `webview frontend`: 使用 `Vite`
+迁移没有把核心业务状态搬进 React 前端。
 
 原因:
 
-1. 扩展宿主是 Node 侧单入口打包场景, 现有 `esbuild` 已经足够稳定且高效.
-2. Webview 本质上是浏览器前端应用, `Vite` 对 React, CSS, 多入口和静态资源处理更成熟.
-3. `TailwindCSS` 与 `Vite` 的集成链路标准, 维护成本低于手工拼装自定义 CSS 构建链.
-4. 当前 HTTP Client 已经存在工作台, 侧边栏, Toast 等多个前端区块, 继续扩展时 `Vite` 更利于维护.
+- VS Code 扩展的命令、存储、请求执行与 Webview 生命周期天然属于宿主层
+- 宿主作为事实源能避免双向状态漂移
+- 前端更适合负责渲染、局部交互与纯逻辑模型
 
-结论:
+### 4.2 双入口而不是单入口
 
-- 继续保留当前宿主侧 `esbuild`.
-- 新增一套只服务于 Webview 的 `Vite` 前端构建链.
-- 不把整个插件工程迁移到 `Vite`.
-
-### 5.3 Tailwind 使用原则
-
-Tailwind 在本项目中必须遵守以下规则:
-
-1. 使用最新版本 `TailwindCSS` 与 `@tailwindcss/vite`.
-2. 关闭 `preflight`, 避免干扰 VS Code Webview 的桌面化细节.
-3. `preflight` 关闭通过选择性导入 `theme.css` 与 `utilities.css` 实现, 不依赖旧版 `corePlugins.preflight`.
-4. 优先使用 VS Code 主题变量, 不允许用 Tailwind 默认调色板替代现有主题体系.
-5. 允许 `Tailwind utility + 少量语义化组件类 + 保留设计 token CSS` 共存.
-6. 不要求把所有现有样式机械改写成纯 utility class.
-
-结论是:
-
-- `Tailwind` 在这里是样式编排工具.
-- 当前视觉 token 仍然是最终事实源.
-
-## 6. 目标架构
-
-迁移后应形成如下边界:
-
-```text
-Extension Host
-├─ src/http_client/panel.ts
-├─ src/http_client/sidebar_view.ts
-├─ src/http_client/runner.ts
-├─ src/http_client/types.ts
-└─ 负责: 状态快照, 请求执行, 存储, 日志, postMessage
-
-Webview Frontend
-├─ workbench React App
-├─ sidebar React App
-├─ shared protocol adapter
-├─ shared ToastCenter
-└─ 负责: 渲染, 本地交互, 局部 UI 状态
-```
-
-核心原则:
-
-1. 宿主仍然是业务事实源.
-2. Webview 只接管渲染和页面局部交互.
-3. 消息边界不改变.
-
-## 7. 目录规划
-
-建议新增独立前端源码目录, 不再把整段 HTML 与 JS 写回宿主字符串模板.
-
-建议结构如下:
-
-```text
-webviews/http_client/
-├─ workbench/
-│  ├─ main.tsx
-│  ├─ App.tsx
-│  └─ workbench.css
-├─ sidebar/
-│  ├─ main.tsx
-│  ├─ SidebarApp.tsx
-│  └─ sidebar.css
-├─ shared/
-│  ├─ vscode.ts
-│  └─ bootstrap.ts
-├─ styles/
-│  └─ tokens.css
-└─ vite.config.ts
-```
-
-扩展宿主侧保留最小 HTML 装载器:
-
-```text
-src/http_client/webview/index.ts
-src/http_client/sidebar_view.ts
-```
-
-这两个文件迁移后的职责应缩减为:
-
-- 生成 CSP
-- 注入初始状态
-- 引用外部构建产物
-- 维持 `postMessage` 入口
-
-## 8. 构建设计
-
-### 8.1 产物位置
-
-建议将 Webview 构建产物输出到固定静态目录, 例如:
-
-```text
-media/http_client/
-├─ workbench.js
-├─ workbench.css
-├─ sidebar.js
-├─ sidebar.css
-└─ chunks/
-   └─ jsx-runtime.js
-```
+迁移没有把工作台与侧边栏强行合并成同一入口。
 
 原因:
 
-1. VS Code 扩展打包对固定资源路径更友好.
-2. 宿主侧可以直接按固定入口文件名生成 `webview.asWebviewUri`.
-3. 共享运行时允许输出到 `chunks/` 目录, 但文件名保持稳定, 不采用 hash.
-4. 当前目标不是前端网站发布, 没有必要引入 hash 文件名策略.
+- 两个表面职责不同
+- 它们拥有不同的初始状态与消息节奏
+- 双入口更有利于资源拆分和表面边界维护
 
-### 8.2 构建脚本建议
+最终 Vite 双入口为:
 
-建议新增脚本:
+- `workbench/main.tsx`
+- `sidebar/main.tsx`
 
-```json
-{
-  "compile:webview": "tsc -p ./webviews/http_client/tsconfig.json --noEmit && vite build --config webviews/http_client/vite.config.ts",
-  "watch:webview": "vite build --watch --config webviews/http_client/vite.config.ts",
-  "compile": "pnpm compile:webview && 原有 extension build",
-  "watch": "并行 watch webview 与 extension"
-}
-```
+### 4.3 继续复用统一 Toast host
 
-### 8.3 CSP 策略
+迁移没有强制把 Toast 改成完整 React 组件树。
 
-迁移后不应继续依赖大段内联脚本.
+当前实际策略是:
 
-建议目标:
+- Toast 由宿主 `ToastService` 调度
+- Webview 使用宿主注入的 Toast host 标记、样式和脚本
+- 无可用 Webview 时回退原生消息
 
-- `style-src ${webview.cspSource}`
-- `script-src ${webview.cspSource}`
+这让迁移范围聚焦在主 UI 表面, 避免把稳定的提示链路一起重写。
 
-仅在必须保留少量引导脚本时才使用 `nonce`.
+## 5. 与原旧路径的关系
 
-### 8.4 初始状态注入
+仓库中仍保留了旧 `src/http_client/webview/state.ts` 与 `src/http_client/webview/ui/*` 等文件。
 
-初始状态仍需由宿主生成并注入页面, 但注入方式应收敛为:
+迁移完成后的正确理解是:
 
-1. 在 HTML 中挂载根节点.
-2. 通过一个极小的启动脚本把 `initialState` 放到 `window`.
-3. React 启动后读取该初始状态并进入受控渲染.
+- 它们不再是当前主运行路径
+- 它们可能仍承担过渡、兼容、测试辅助或待清理职责
+- 文档不应再把它们写成当前正式 UI 结构
 
-宿主侧仍然负责:
+## 6. 迁移完成后的结果
 
-- CSP
-- 初始状态序列化
-- 资源 URI 注入
-- `acquireVsCodeApi()` 可用上下文提供
+迁移完成后, 已经可以明确确认:
 
-## 9. React 组件切分方案
+- 工作台和侧边栏都通过 React Webview 运行
+- `webviews/http_client/` 成为主 UI 事实源
+- `media/http_client/` 成为稳定构建输出目录
+- 宿主入口与前端构建之间通过 bootstrap 和 buildId 关联
+- Toast 路径已经纳入统一宿主调度体系
 
-为了保证 UI 不变, 组件切分必须围绕当前现有视觉区块进行, 不能先做抽象化拆分.
+## 7. 当前应以哪些文档为准
 
-### 9.1 工作台
+迁移完成后, 请按以下顺序理解当前实现:
 
-建议工作台组件树:
+1. `docs/HTTP客户端设计.md`
+2. `docs/设计.md`
+3. 本归档文档
 
-```text
-App
-├─ Toolbar
-│  ├─ MethodSelect
-│  ├─ UrlInput
-│  ├─ EnvironmentSelect
-│  ├─ SendButton
-│  ├─ LoadTestButton
-│  ├─ SaveButton
-│  └─ ImportCurlButton
-├─ RequestEditor
-│  ├─ EditorTabs
-│  ├─ ParamsEditor
-│  ├─ HeadersEditor
-│  └─ BodyEditor
-├─ ResponseViewer
-│  ├─ ResponseMetaBar
-│  ├─ ResponseTabs
-│  ├─ BodyPanel
-│  ├─ HeadersPanel
-│  ├─ MetaPanel
-│  └─ LoadTestPanel
-└─ ToastCenter
-```
-
-### 9.2 侧边栏
-
-建议侧边栏组件树:
-
-```text
-SidebarApp
-├─ SidebarHeader
-├─ TabStrip
-├─ EmptyStateAction
-├─ RecordList
-├─ CollectionList
-├─ EnvironmentList
-└─ ToastCenter
-```
-
-### 9.3 组件边界规则
-
-- 组件名称应直接映射当前 UI 区块.
-- 不提前抽出通用 `BaseButton`, `GenericList`, `UniversalPanel` 这类重抽象组件.
-- 只有出现第 2 个真实复用点时才做抽象.
-
-## 10. 状态与消息模型
-
-### 10.1 状态分层
-
-建议状态明确分为两层:
-
-1. 宿主快照状态
-2. 前端临时 UI 状态
-
-宿主快照状态负责:
-
-- 当前请求与集合数据
-- 当前环境
-- 历史记录
-- 当前响应
-- 压测结果
-
-前端临时 UI 状态负责:
-
-- 当前激活 Tab
-- 输入焦点
-- 局部展开状态
-- Toast 展示队列
-- 请求中按钮的瞬时反馈
-
-### 10.2 协议复用
-
-以下原则必须成立:
-
-1. `src/http_client/types.ts` 继续作为协议事实源.
-2. React 前端不重命名现有消息类型.
-3. 当前 `responseAck` 机制原样保留.
-4. 当前 `frontendLog` 机制原样保留.
-
-### 10.3 本地状态组织
-
-不建议在第一阶段引入 Redux 或 Zustand.
-
-建议使用:
-
-- `useReducer` 管理页面状态
-- `useMemo` 做派生展示
-- `useEffect` 接入 `message` 事件和宿主通信
-
-这样可以减少新依赖, 同时保持足够清晰的更新路径.
-
-## 11. UI 一致性实施策略
-
-本次迁移的难点不是“做一个更漂亮的页面”, 而是“用新的技术栈重做同一个页面”.
-
-因此必须采用以下策略:
-
-### 11.1 以当前版本为冻结基线
-
-基线提交: `7813a4c`
-
-在实施前需固定以下参考物:
-
-- 工作台截图
-- 侧边栏截图
-- 关键状态截图, 包括空状态, 发送中, 成功响应, 错误响应, 压测结果, 多条 Toast
-
-### 11.2 样式迁移顺序
-
-建议顺序:
-
-1. 先迁移设计 token 和 CSS 变量.
-2. 再迁移布局骨架.
-3. 再迁移具体交互组件.
-4. 最后替换局部细节样式.
-
-不要一开始就把现有 CSS 彻底打散成 Tailwind utility, 否则极易导致视觉漂移.
-
-### 11.3 允许保留少量显式 CSS
-
-若某些区块要达到完全一致, 允许保留少量显式 CSS 类.
-
-这不是退步, 而是对“UI 完全一致”目标负责.
-
-## 12. 分阶段实施方案
-
-### 阶段 1. 构建基础设施
-
-目标:
-
-- 建立 `React + TS + Tailwind` Webview 构建链
-- 输出固定静态资源
-- 宿主能稳定加载 React 入口
-
-交付物:
-
-- Webview 新目录
-- 构建脚本
-- 最小空白挂载页
-
-### 阶段 2. 工作台静态壳迁移
-
-目标:
-
-- React 渲染出当前工作台静态结构
-- 视觉上与现状一致
-- 暂不接入完整交互
-
-交付物:
-
-- `Toolbar`
-- `RequestEditor`
-- `ResponseViewer`
-
-### 阶段 3. 工作台交互迁移
-
-目标:
-
-- 迁移当前所有工作台交互
-- 保留发送, 保存, 压测, 响应切换, 复制等行为
-
-### 阶段 4. 侧边栏迁移
-
-目标:
-
-- 迁移 `记录 / 集合 / 环境`
-- 保留分组, 展开, 选择, 空状态新建操作
-
-### 阶段 5. Toast 与收口
-
-目标:
-
-- 接通统一 ToastCenter
-- 完成边界状态验证
-- 删除旧版内联脚本主实现
-
-当前落地决策:
-
-- 运行路径切换阶段继续复用现有稳定的 Toast host 脚本和样式.
-- React workbench / sidebar 只负责把 `mxToast/show` 转发给统一 Toast host.
-- 这样可以保证多 Toast, 悬停暂停, 锁位, 复制按钮等行为完全保持一致, 不为迁移引入第二套 Toast 运行时.
-
-### 阶段 6. 全量验收
-
-目标:
-
-- 按 [../HTTP客户端设计.md](../HTTP客户端设计.md) 做一次完整功能验收
-- 对比基线截图确认 UI 无漂移
-
-## 13. 验收标准
-
-迁移完成后, 必须同时满足以下条件:
-
-1. `HTTP Client` 所有现有自动化测试继续通过.
-2. 工作台与侧边栏全部现有功能可用.
-3. `responseAck` 失效自愈链路可复测.
-4. Toast 多实例, 悬停暂停, 复制按钮, 锁位策略全部可用.
-5. `记录` 页最近 `30` 条分组展示逻辑不变.
-6. JSON 响应高亮, 中文显示, `Pretty / Raw` 切换逻辑不变.
-7. 用户侧可见文案与布局不发生主动变化.
-8. 按 [../HTTP客户端设计.md](../HTTP客户端设计.md) 做完整手工验收时, 不出现功能回退.
-
-## 14. 风险与应对
-
-### 风险 1. Tailwind 造成样式漂移
-
-应对:
-
-- 关闭 `preflight`
-- 先迁 token, 后迁 utility
-- 允许显式 CSS 保底
-
-### 风险 2. React 状态更新影响响应回推时序
-
-应对:
-
-- `responseAck` 保持宿主主导
-- 响应渲染完成后的确认动作必须保留
-- 新增前端最小 smoke test 覆盖消息消费
-
-### 风险 3. Webview 资源路径与 CSP 失配
-
-应对:
-
-- 使用固定产物路径
-- 统一通过 `webview.asWebviewUri` 注入
-- 先完成最小加载页验证, 再迁业务页面
-
-### 风险 4. 迁移过程引入不必要重构
-
-应对:
-
-- 只动 Webview 层
-- 不改宿主主链路
-- 不在迁移过程中顺手做 UI 改版或协议重命名
-
-## 15. 结论
-
-在“功能完全一致, UI 完全一致”的前提下, 仍然可以迁移到 `React + TailwindCSS + TypeScript`.
-
-但实现策略必须是:
-
-1. 以当前版本为冻结基线.
-2. 只迁移 Webview 层.
-3. 以保真为第一目标, 不是以重构整洁度为第一目标.
-4. 先完成等价迁移, 再考虑后续迭代收益.
-
-只有按这个边界执行, 迁移才是低风险且值得做的.
+也就是说, 本文档只保留“为什么会这么落地”的历史上下文, 不再承担当前实现的唯一事实源角色。

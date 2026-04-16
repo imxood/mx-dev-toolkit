@@ -29,24 +29,6 @@
         }
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "mx-dev-toolkit-httpClientContainer",
-          "title": "HTTP Client",
-          "icon": "media/http-lab.svg"
-        }
-      ]
-    },
-    "views": {
-      "mx-dev-toolkit-httpClientContainer": [
-        {
-          "type": "webview",
-          "id": "mx-dev-toolkit-httpClientLauncher",
-          "name": "HTTP Client"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "mx-dev-toolkit.httpClient.openWorkbench",
@@ -108,10 +90,11 @@
     "watch:webview": "vite build --watch --config webviews/http_client/vite.config.ts",
     "lint": "eslint src webviews/http_client --ext ts,tsx",
     "test:http-client:core": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/http_client/tests/store.test.js out-tests/http_client/tests/resolver.test.js out-tests/http_client/tests/runner.test.js out-tests/http_client/tests/load_runner.test.js out-tests/http_client/tests/curl_import.test.js out-tests/http_client/tests/webview_state.test.js out-tests/http_client/tests/sidebar_view.test.js out-tests/http_client/tests/react_loader.test.js out-tests/http_client/tests/panel.test.js",
-    "test:http-client:webview": "tsc -p ./tsconfig.webview_test.json && node --test --test-concurrency=1 out-tests-webview/webviews/http_client/tests/workbench_model.test.js out-tests-webview/webviews/http_client/tests/sidebar_model.test.js",
+    "test:http-client:webview": "tsc -p ./tsconfig.webview_test.json && node --test --test-concurrency=1 out-tests-webview/webviews/http_client/tests/workbench_model.test.js out-tests-webview/webviews/http_client/tests/sidebar_model.test.js out-tests-webview/webviews/http_client/tests/component_contract.test.js",
     "test:http-client": "pnpm test:http-client:core && pnpm test:http-client:webview",
+    "test:selection": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/selection/tests/path_format.test.js",
     "test:toast": "tsc -p ./tsconfig.test.json && node --test --test-concurrency=1 out-tests/toast/tests/service.test.js",
-    "test": "pnpm test:http-client && pnpm test:toast"
+    "test": "pnpm test:http-client && pnpm test:selection && pnpm test:toast"
   },
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {

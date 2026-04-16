@@ -2,56 +2,33 @@ import assert from "node:assert/strict";
 import Module = require("node:module");
 import { test } from "node:test";
 import { createTestLogger } from "./helpers";
-import { createDefaultConfigFile, createDefaultRequest } from "../types";
 
-test("sidebar_view: React 侧边栏装载器输出正确的资源和 bootstrap", async () => {
+test("sidebar_view: 侧边启动器应输出轻量入口按钮并避免再装载完整 React 侧栏", async () => {
   const logger = await createTestLogger("http_client_sidebar_view.txt");
-  await logger.flow("验证侧边栏 React 装载页引用正确资源, 并注入 bootstrap 和初始状态");
+  await logger.flow("验证 Activity 侧边栏已降级为轻量启动器, 不再承担高频列表交互");
 
   const { getSidebarHtml } = loadSidebarModule();
   const html = getSidebarHtml(
     {
       cspSource: "vscode-webview://test",
-      asWebviewUri: (value: { toString(): string }) => ({
-        toString: () => `vscode-webview://test/${value.toString().replace(/^[a-zA-Z]:/, "").replace(/\\/g, "/")}`,
-      }),
     } as never,
-    {
-      config: createDefaultConfigFile(),
-      activeRequestId: null,
-      activeEnvironmentId: null,
-      draft: createDefaultRequest("侧边栏装载"),
-      history: [],
-      response: null,
-      requestRunning: false,
-      loadTestProfile: {
-        totalRequests: 1,
-        concurrency: 1,
-        timeoutMs: 1000,
-      },
-      loadTestResult: null,
-      loadTestProgress: null,
-      dirty: false,
-      activeTab: "params",
-      responseTab: "body",
-    },
     "nonce"
   );
 
-  await logger.step("检查 HTML 已切换到外部 React 资源装载");
-  assert.match(html, /<div id="root"><\/div>/);
-  assert.match(html, /sidebar\.css/);
-  assert.match(html, /sidebar\.js/);
-  assert.match(html, /type="module"/);
+  await logger.step("检查侧边栏只保留启动器按钮和内联脚本");
+  assert.match(html, /打开完整工作台/);
+  assert.match(html, /id="open-workbench"/);
+  assert.match(html, /id="create-request"/);
+  assert.match(html, /id="import-curl"/);
+  assert.doesNotMatch(html, /sidebar\.css/);
+  assert.doesNotMatch(html, /sidebar\.js/);
 
-  await logger.verify("检查 bootstrap 与统一 Toast host 仍然注入");
-  assert.match(html, /window\.__MX_HTTP_CLIENT_BOOTSTRAP__/);
-  assert.match(html, /"surface":"sidebar"/);
-  assert.match(html, /"buildId":"2026-04-13-01"/);
-  assert.match(html, /window\.__mxToastCenter/);
-  assert.match(html, /mx-toast-root/);
+  await logger.verify("检查 HTML 保留标题, CSP 与启动器说明");
+  assert.match(html, /<title>HTTP Client<\/title>/);
+  assert.match(html, /Content-Security-Policy/);
+  assert.match(html, /建议在完整工作台中完成高频操作/);
 
-  await logger.conclusion("React 侧边栏装载页已正确引用构建产物, 并保留统一 Toast 与 bootstrap 能力");
+  await logger.conclusion("侧边栏已切换为轻量启动器, 高频交互将收敛到单一工作台页面");
 });
 
 function loadSidebarModule(): typeof import("../sidebar_view") {
