@@ -10,7 +10,7 @@ export const HTTP_CLIENT_LOAD_TEST_MAX_REQUESTS = 10000;
 export const HTTP_CLIENT_LOAD_TEST_MAX_TIMEOUT_MS = 120000;
 export const HTTP_CLIENT_DEFAULT_TIMEOUT_MS = 30000;
 export const HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS = 30000;
-export const HTTP_CLIENT_WEBVIEW_BUILD_ID = "2026-04-13-01";
+export const HTTP_CLIENT_WEBVIEW_BUILD_ID = "2026-04-16-01";
 export const HTTP_CLIENT_RESPONSE_ACK_TIMEOUT_MS = 400;
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
@@ -181,6 +181,7 @@ export interface HttpLoadTestResult {
 export interface HttpClientViewState {
   config: HttpClientConfigFile;
   activeRequestId: string | null;
+  selectedHistoryId: string | null;
   activeEnvironmentId: string | null;
   draft: HttpRequestEntity | null;
   history: HttpHistoryRecord[];
@@ -255,12 +256,21 @@ export type WebviewToExtensionMessage =
   | { type: "httpClient/createCollectionPrompt" }
   | { type: "httpClient/renameCollectionPrompt"; payload: { collectionId: string } }
   | { type: "httpClient/deleteCollection"; payload: { collectionId: string } }
-  | { type: "httpClient/createRequest"; payload: { collectionId: string | null } }
+  | {
+      type: "httpClient/createRequest";
+      payload: {
+        collectionId: string | null;
+        request?: HttpRequestEntity;
+      };
+    }
+  | { type: "httpClient/createEnvironment" }
   | { type: "httpClient/renameRequestPrompt"; payload: { requestId: string } }
   | { type: "httpClient/deleteRequest"; payload: { requestId: string } }
   | { type: "httpClient/duplicateRequest"; payload: { requestId: string } }
   | { type: "httpClient/toggleFavorite"; payload: { requestId: string; favorite: boolean } }
   | { type: "httpClient/selectEnvironment"; payload: { environmentId: string | null } }
+  | { type: "httpClient/saveEnvironment"; payload: { environment: HttpEnvironmentEntity } }
+  | { type: "httpClient/deleteEnvironment"; payload: { environmentId: string } }
   | { type: "httpClient/selectHistory"; payload: { historyId: string } }
   | { type: "httpClient/loadTest/start"; payload: HttpClientLoadTestPayload }
   | { type: "httpClient/loadTest/stop" }

@@ -21,6 +21,24 @@ export interface WorkbenchMessageSnapshot {
   hostCommand: "send" | "save" | "loadTest" | "focusCurlImport" | null;
 }
 
+type WorkbenchSessionPatch = Partial<
+  Pick<
+    HttpClientViewState,
+    | "activeRequestId"
+    | "selectedHistoryId"
+    | "activeEnvironmentId"
+    | "draft"
+    | "response"
+    | "requestRunning"
+    | "loadTestProfile"
+    | "loadTestResult"
+    | "loadTestProgress"
+    | "dirty"
+    | "activeTab"
+    | "responseTab"
+  >
+>;
+
 export function createInitialUiState(): WorkbenchUiState {
   return {
     responseSearch: "",
@@ -40,6 +58,7 @@ export function createFallbackViewState(): HttpClientViewState {
       environments: [],
     },
     activeRequestId: null,
+    selectedHistoryId: null,
     activeEnvironmentId: null,
     draft,
     history: [],
@@ -81,12 +100,11 @@ export function applyWorkbenchMessage(
 
   if (message.type === "httpClient/response") {
     return {
-      viewState: {
-        ...cloneViewState(currentViewState),
-        response: cloneResponse(message.payload),
+      viewState: patchWorkbenchSession(currentViewState, {
+        response: message.payload,
         requestRunning: false,
         responseTab: "body",
-      },
+      }),
       uiState: {
         ...currentUiState,
         lastErrorMessage: "",
@@ -97,11 +115,10 @@ export function applyWorkbenchMessage(
 
   if (message.type === "httpClient/loadTest/progress") {
     return {
-      viewState: {
-        ...cloneViewState(currentViewState),
-        loadTestProgress: { ...message.payload },
+      viewState: patchWorkbenchSession(currentViewState, {
+        loadTestProgress: message.payload,
         responseTab: "loadTest",
-      },
+      }),
       uiState: currentUiState,
       hostCommand: null,
     };
@@ -109,16 +126,11 @@ export function applyWorkbenchMessage(
 
   if (message.type === "httpClient/loadTest/result") {
     return {
-      viewState: {
-        ...cloneViewState(currentViewState),
-        loadTestResult: {
-          ...message.payload,
-          errorSamples: message.payload.errorSamples.map((sample) => ({ ...sample })),
-          statusCounts: message.payload.statusCounts.map((item) => ({ ...item })),
-        },
+      viewState: patchWorkbenchSession(currentViewState, {
+        loadTestResult: message.payload,
         loadTestProgress: null,
         responseTab: "loadTest",
-      },
+      }),
       uiState: currentUiState,
       hostCommand: null,
     };
@@ -126,12 +138,11 @@ export function applyWorkbenchMessage(
 
   if (message.type === "httpClient/error") {
     return {
-      viewState: {
-        ...cloneViewState(currentViewState),
+      viewState: patchWorkbenchSession(currentViewState, {
         response: null,
         requestRunning: false,
         responseTab: "body",
-      },
+      }),
       uiState: {
         ...currentUiState,
         lastErrorMessage: message.payload.message,
@@ -142,14 +153,14 @@ export function applyWorkbenchMessage(
 
   if (message.type === "httpClient/hostCommand") {
     return {
-      viewState: cloneViewState(currentViewState),
+      viewState: currentViewState,
       uiState: currentUiState,
       hostCommand: message.payload.command,
     };
   }
 
   return {
-    viewState: cloneViewState(currentViewState),
+    viewState: currentViewState,
     uiState: currentUiState,
     hostCommand: null,
   };
@@ -170,15 +181,9 @@ export function cloneViewState(viewState: HttpClientViewState): HttpClientViewSt
     draft: viewState.draft ? cloneRequest(viewState.draft) : null,
     history: viewState.history.map((item) => cloneHistoryRecord(item)),
     response: viewState.response ? cloneResponse(viewState.response) : null,
-    loadTestProfile: { ...viewState.loadTestProfile },
-    loadTestResult: viewState.loadTestResult
-      ? {
-          ...viewState.loadTestResult,
-          errorSamples: viewState.loadTestResult.errorSamples.map((sample) => ({ ...sample })),
-          statusCounts: viewState.loadTestResult.statusCounts.map((item) => ({ ...item })),
-        }
-      : null,
-    loadTestProgress: viewState.loadTestProgress ? { ...viewState.loadTestProgress } : null,
+    loadTestProfile: cloneLoadTestProfile(viewState.loadTestProfile),
+    loadTestResult: viewState.loadTestResult ? cloneLoadTestResult(viewState.loadTestResult) : null,
+    loadTestProgress: viewState.loadTestProgress ? cloneLoadTestProgress(viewState.loadTestProgress) : null,
   };
 }
 
@@ -187,6 +192,175 @@ export function cloneRequest(request: HttpRequestEntity): HttpRequestEntity {
     ...request,
     params: request.params.map((item) => ({ ...item })),
     headers: request.headers.map((item) => ({ ...item })),
+  };
+}
+
+export function patchWorkbenchSession(
+  currentViewState: HttpClientViewState,
+  patch: WorkbenchSessionPatch
+): HttpClientViewState {
+  const nextState: HttpClientViewState = {
+    ...currentViewState,
+  };
+
+  if ("activeRequestId" in patch) {
+    nextState.activeRequestId = patch.activeRequestId ?? null;
+  }
+  if ("selectedHistoryId" in patch) {
+    nextState.selectedHistoryId = patch.selectedHistoryId ?? null;
+  }
+  if ("activeEnvironmentId" in patch) {
+    nextState.activeEnvironmentId = patch.activeEnvironmentId ?? null;
+  }
+  if ("draft" in patch) {
+    nextState.draft = patch.draft ? cloneRequest(patch.draft) : null;
+  }
+  if ("response" in patch) {
+    nextState.response = patch.response ? cloneResponse(patch.response) : null;
+  }
+  if ("requestRunning" in patch) {
+    nextState.requestRunning = Boolean(patch.requestRunning);
+  }
+  if ("loadTestProfile" in patch && patch.loadTestProfile) {
+    nextState.loadTestProfile = cloneLoadTestProfile(patch.loadTestProfile);
+  }
+  if ("loadTestResult" in patch) {
+    nextState.loadTestResult = patch.loadTestResult ? cloneLoadTestResult(patch.loadTestResult) : null;
+  }
+  if ("loadTestProgress" in patch) {
+    nextState.loadTestProgress = patch.loadTestProgress ? cloneLoadTestProgress(patch.loadTestProgress) : null;
+  }
+  if ("dirty" in patch) {
+    nextState.dirty = Boolean(patch.dirty);
+  }
+  if ("activeTab" in patch && patch.activeTab) {
+    nextState.activeTab = patch.activeTab;
+  }
+  if ("responseTab" in patch && patch.responseTab) {
+    nextState.responseTab = patch.responseTab;
+  }
+
+  return nextState;
+}
+
+export function updateDraftLocally(
+  currentViewState: HttpClientViewState,
+  mutator: (draft: HttpRequestEntity) => HttpRequestEntity
+): HttpClientViewState {
+  if (!currentViewState.draft) {
+    return currentViewState;
+  }
+
+  const nextDraft = mutator(cloneRequest(currentViewState.draft));
+  nextDraft.updatedAt = new Date().toISOString();
+  return patchWorkbenchSession(currentViewState, {
+    draft: nextDraft,
+    dirty: true,
+  });
+}
+
+export function createScratchRequestLocally(
+  currentViewState: HttpClientViewState,
+  request: HttpRequestEntity
+): HttpClientViewState {
+  return patchWorkbenchSession(currentViewState, {
+    activeRequestId: request.id,
+    selectedHistoryId: null,
+    draft: request,
+    response: null,
+    dirty: true,
+    responseTab: "body",
+  });
+}
+
+export function selectRequestLocally(
+  currentViewState: HttpClientViewState,
+  requestId: string
+): HttpClientViewState {
+  const savedRequest = currentViewState.config.requests.find((item) => item.id === requestId) ?? null;
+  if (!savedRequest) {
+    return currentViewState;
+  }
+
+  const draft = currentViewState.draft?.id === requestId ? currentViewState.draft : savedRequest;
+  return patchWorkbenchSession(currentViewState, {
+    activeRequestId: requestId,
+    selectedHistoryId: null,
+    draft,
+    response: null,
+    dirty: currentViewState.draft?.id === requestId ? currentViewState.dirty : false,
+    responseTab: "body",
+  });
+}
+
+export function selectHistoryLocally(
+  currentViewState: HttpClientViewState,
+  historyId: string
+): HttpClientViewState {
+  const history = currentViewState.history.find((item) => item.id === historyId) ?? null;
+  if (!history) {
+    return currentViewState;
+  }
+
+  return patchWorkbenchSession(currentViewState, {
+    activeRequestId: history.request.id,
+    selectedHistoryId: historyId,
+    draft: history.request,
+    response: null,
+    dirty: false,
+    responseTab: "body",
+  });
+}
+
+export function setEnvironmentLocally(
+  currentViewState: HttpClientViewState,
+  environmentId: string | null
+): HttpClientViewState {
+  return patchWorkbenchSession(currentViewState, {
+    activeEnvironmentId: environmentId,
+  });
+}
+
+export function toggleFavoriteLocally(
+  currentViewState: HttpClientViewState,
+  requestId: string,
+  favorite: boolean
+): HttpClientViewState {
+  const hasSavedRequest = currentViewState.config.requests.some((request) => request.id === requestId);
+  if (!hasSavedRequest && currentViewState.draft?.id !== requestId) {
+    return currentViewState;
+  }
+
+  const nextDraft =
+    currentViewState.draft?.id === requestId
+      ? {
+          ...cloneRequest(currentViewState.draft),
+          favorite,
+        }
+      : currentViewState.draft;
+
+  return {
+    ...patchWorkbenchSession(
+      currentViewState,
+      nextDraft
+        ? {
+            draft: nextDraft,
+          }
+        : {}
+    ),
+    config: hasSavedRequest
+      ? {
+          ...currentViewState.config,
+          requests: currentViewState.config.requests.map((request) =>
+            request.id === requestId
+              ? {
+                  ...request,
+                  favorite,
+                }
+              : request
+          ),
+        }
+      : currentViewState.config,
   };
 }
 
@@ -219,6 +393,24 @@ export function getDisplayedResponseText(response: HttpResponseResult | null, re
   }
 
   return responsePretty && response.isJson ? response.bodyPrettyText : response.bodyText;
+}
+
+export function getSelectedHistoryOrdinal(history: HttpHistoryRecord[], selectedHistoryId: string | null, limit = 30): number | null {
+  if (!selectedHistoryId) {
+    return null;
+  }
+
+  const index = history.slice(0, limit).findIndex((item) => item.id === selectedHistoryId);
+  return index >= 0 ? index + 1 : null;
+}
+
+export function isScratchDraft(viewState: HttpClientViewState): boolean {
+  const draft = viewState.draft;
+  if (!draft) {
+    return false;
+  }
+
+  return !viewState.config.requests.some((request) => request.id === draft.id);
 }
 
 export function createEmptyKeyValue(createId: () => string): HttpKeyValue {
@@ -352,6 +544,26 @@ function cloneHistoryRecord(item: HttpHistoryRecord): HttpHistoryRecord {
     ...item,
     request: cloneRequest(item.request),
     responseSummary: { ...item.responseSummary },
+  };
+}
+
+function cloneLoadTestProfile(profile: HttpLoadTestProfile): HttpLoadTestProfile {
+  return {
+    ...profile,
+  };
+}
+
+function cloneLoadTestProgress(progress: NonNullable<HttpClientViewState["loadTestProgress"]>) {
+  return {
+    ...progress,
+  };
+}
+
+function cloneLoadTestResult(result: NonNullable<HttpClientViewState["loadTestResult"]>) {
+  return {
+    ...result,
+    errorSamples: result.errorSamples.map((sample) => ({ ...sample })),
+    statusCounts: result.statusCounts.map((item) => ({ ...item })),
   };
 }
 

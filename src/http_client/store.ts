@@ -36,6 +36,8 @@ function getDraftKey(requestId: string): string {
 
 export class HttpClientStore {
   private readonly configPath: string;
+  private configCache: HttpClientConfigFile | null = null;
+  private loadingConfigPromise: Promise<HttpClientConfigFile> | null = null;
 
   constructor(
     private readonly workspaceRoot: string,
@@ -53,14 +55,31 @@ export class HttpClientStore {
   }
 
   public async ensureInitialized(): Promise<HttpClientConfigFile> {
+    if (this.configCache) {
+      return this.configCache;
+    }
+
+    if (this.loadingConfigPromise) {
+      return this.loadingConfigPromise;
+    }
+
+    this.loadingConfigPromise = this.loadOrCreateConfig();
+    try {
+      return await this.loadingConfigPromise;
+    } finally {
+      this.loadingConfigPromise = null;
+    }
+  }
+
+  private async loadOrCreateConfig(): Promise<HttpClientConfigFile> {
     try {
       await fs.access(this.configPath);
     } catch {
       const initialConfig = createDefaultConfigFile();
       await this.writeConfig(initialConfig);
-      return initialConfig;
+      return this.configCache ?? initialConfig;
     }
-    return this.loadConfig();
+    return this.loadConfigFromDisk();
   }
 
   public async loadSnapshot(): Promise<HttpClientSnapshot> {
@@ -74,6 +93,14 @@ export class HttpClientStore {
   }
 
   public async loadConfig(): Promise<HttpClientConfigFile> {
+    if (this.configCache) {
+      return this.configCache;
+    }
+
+    return this.loadConfigFromDisk();
+  }
+
+  private async loadConfigFromDisk(): Promise<HttpClientConfigFile> {
     const rawText = await fs.readFile(this.configPath, "utf8");
     let raw: unknown;
     try {
@@ -85,13 +112,17 @@ export class HttpClientStore {
     if (normalized.version !== HTTP_CLIENT_CONFIG_VERSION) {
       normalized.version = HTTP_CLIENT_CONFIG_VERSION;
       await this.writeConfig(normalized);
+      return this.configCache ?? normalized;
     }
+
+    this.configCache = normalized;
     return normalized;
   }
 
   public async writeConfig(config: HttpClientConfigFile): Promise<void> {
     const normalized = normalizeConfig(config);
     await fs.writeFile(this.configPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    this.configCache = normalized;
   }
 
   public async createCollection(name: string): Promise<HttpCollectionEntity> {
@@ -216,8 +247,16 @@ export class HttpClientStore {
     await this.writeConfig(config);
   }
 
-  public async createScratchRequest(collectionId: string | null = null): Promise<HttpRequestEntity> {
-    const request = createDefaultRequest("新请求", collectionId);
+  public async createScratchRequest(
+    collectionId: string | null = null,
+    requestOverride?: HttpRequestEntity
+  ): Promise<HttpRequestEntity> {
+    const request = requestOverride
+      ? sanitizeRequestEntity({
+          ...requestOverride,
+          collectionId: requestOverride.collectionId ?? collectionId,
+        })
+      : createDefaultRequest("新请求", collectionId);
     await this.saveScratchDraft(request);
     await this.setActiveRequestId(request.id);
     return request;
@@ -262,6 +301,15 @@ export class HttpClientStore {
     }
     await this.writeConfig(config);
     return normalized;
+  }
+
+  public async deleteEnvironment(environmentId: string): Promise<void> {
+    const config = await this.ensureInitialized();
+    config.environments = config.environments.filter((item) => item.id !== environmentId);
+    await this.writeConfig(config);
+    if (this.getActiveEnvironmentId() === environmentId) {
+      await this.setActiveEnvironmentId(null);
+    }
   }
 
   public async saveDraft(request: HttpRequestEntity, dirty: boolean): Promise<void> {

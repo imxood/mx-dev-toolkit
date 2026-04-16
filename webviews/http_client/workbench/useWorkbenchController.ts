@@ -2,24 +2,47 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExtensionToWebviewMessage,
   HttpClientViewState,
+  HttpEnvironmentEntity,
   HttpRequestEntity,
   WebviewToExtensionMessage,
 } from "../../../src/http_client/types";
 import { getBootstrap } from "../shared/bootstrap";
 import { getVscodeApi } from "../shared/vscode";
 import {
+  buildCollectionGroups,
+  buildEnvironmentItems,
+  buildFavoriteRequests,
+  buildHistoryGroups,
+  buildUngroupedRequests,
+  createInitialSidebarUiState,
+  type SidebarCollectionGroup,
+  type SidebarEnvironmentDraft,
+  type SidebarEnvironmentDraftRow,
+  type SidebarEnvironmentItem,
+  type SidebarHistoryGroup,
+  type SidebarTab,
+  type SidebarUiState,
+} from "../shared/sidebar_model";
+import {
   applyWorkbenchMessage,
   buildUrlHint,
   cloneRequest,
   cloneViewState,
+  createScratchRequestLocally,
   createEmptyKeyValue,
   createFallbackViewState,
   createInitialUiState,
-  ensureJsonBodyMode,
   getDisplayedResponseText,
+  highlightText,
+  patchWorkbenchSession,
   renderJsonHighlightedText,
+  selectHistoryLocally,
+  selectRequestLocally,
+  setEnvironmentLocally,
   syncParamsFromUrl,
   syncUrlFromParams,
+  toggleFavoriteLocally,
+  updateDraftLocally,
   type WorkbenchUiState,
 } from "../shared/workbench_model";
 
@@ -27,9 +50,39 @@ export interface WorkbenchController {
   buildId: string;
   viewState: HttpClientViewState;
   uiState: WorkbenchUiState;
+  sidebarUiState: SidebarUiState;
   hasHostState: boolean;
   displayedResponseText: string;
   highlightedResponseHtml: string;
+  historyGroups: SidebarHistoryGroup[];
+  collectionGroups: SidebarCollectionGroup[];
+  favoriteRequests: HttpRequestEntity[];
+  ungroupedRequests: HttpClientViewState["config"]["requests"];
+  environmentItems: SidebarEnvironmentItem[];
+  selectedEnvironment: HttpEnvironmentEntity | null;
+  environmentDraft: SidebarEnvironmentDraft | null;
+  pendingRequestAction: { requestId: string; kind: "duplicate" | "delete" } | null;
+  setSidebarTab(tab: SidebarTab): void;
+  setSidebarKeyword(keyword: string): void;
+  toggleHistoryGroup(groupKey: string): void;
+  createRequest(collectionId?: string | null): void;
+  createCollection(): void;
+  renameCollection(collectionId: string): void;
+  deleteCollection(collectionId: string): void;
+  createEnvironment(): void;
+  selectRequest(requestId: string): void;
+  renameRequest(requestId: string): void;
+  duplicateRequest(requestId: string): void;
+  deleteRequest(requestId: string): void;
+  toggleFavorite(requestId: string, favorite: boolean): void;
+  selectHistory(historyId: string): void;
+  selectEnvironment(environmentId: string | null): void;
+  setEnvironmentDraftName(name: string): void;
+  updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
+  addEnvironmentVariable(): void;
+  removeEnvironmentVariable(id: string): void;
+  saveEnvironment(): void;
+  deleteEnvironment(): void;
   setRequestTab(tab: HttpClientViewState["activeTab"]): void;
   setResponseTab(tab: HttpClientViewState["responseTab"]): void;
   setMethod(method: HttpRequestEntity["method"]): void;
@@ -60,9 +113,14 @@ export function useWorkbenchController(): WorkbenchController {
     return bootstrap.initialState ? cloneViewState(bootstrap.initialState) : createFallbackViewState();
   });
   const [uiState, setUiState] = useState<WorkbenchUiState>(createInitialUiState);
+  const [sidebarUiState, setSidebarUiState] = useState<SidebarUiState>(createInitialSidebarUiState);
   const [hasHostState, setHasHostState] = useState(Boolean(bootstrap.initialState));
+  const [environmentDraft, setEnvironmentDraft] = useState<SidebarEnvironmentDraft | null>(null);
+  const [pendingRequestAction, setPendingRequestAction] = useState<{ requestId: string; kind: "duplicate" | "delete" } | null>(null);
   const viewStateRef = useRef(viewState);
   const uiStateRef = useRef(uiState);
+  const sidebarUiStateRef = useRef(sidebarUiState);
+  const environmentRowIdRef = useRef(1);
   const pendingAckSourceRef = useRef<"bootstrap" | "state" | "response">("bootstrap");
   const lastAckKeyRef = useRef("");
 
@@ -73,6 +131,15 @@ export function useWorkbenchController(): WorkbenchController {
   useEffect(() => {
     uiStateRef.current = uiState;
   }, [uiState]);
+
+  useEffect(() => {
+    sidebarUiStateRef.current = sidebarUiState;
+  }, [sidebarUiState]);
+
+  const createEnvironmentRow = useCallback((key = "", value = ""): SidebarEnvironmentDraftRow => {
+    const id = `env-row-${environmentRowIdRef.current++}`;
+    return { id, key, value };
+  }, []);
 
   const postMessage = useCallback(
     (message: WebviewToExtensionMessage) => {
@@ -89,6 +156,21 @@ export function useWorkbenchController(): WorkbenchController {
           level,
           scope,
           message,
+        },
+      });
+    },
+    [postMessage]
+  );
+
+  const notifyToast = useCallback(
+    (message: string, kind: "info" | "success" | "warning" | "error" = "info", durationMs?: number) => {
+      postMessage({
+        type: "mxToast/notify",
+        payload: {
+          message,
+          kind,
+          copyText: message,
+          durationMs,
         },
       });
     },
@@ -158,25 +240,41 @@ export function useWorkbenchController(): WorkbenchController {
     [replaceUiState]
   );
 
+  const updateSidebarUiState = useCallback((producer: (current: SidebarUiState) => SidebarUiState) => {
+    const nextUiState = producer(sidebarUiStateRef.current);
+    sidebarUiStateRef.current = nextUiState;
+    setSidebarUiState(nextUiState);
+    return nextUiState;
+  }, []);
+
+  const setSidebarTab = useCallback((tab: SidebarTab) => {
+    updateSidebarUiState((current) => ({
+      ...current,
+      activeTab: tab,
+    }));
+  }, [updateSidebarUiState]);
+
+  const setSidebarKeyword = useCallback((keyword: string) => {
+    updateSidebarUiState((current) => ({
+      ...current,
+      keyword,
+    }));
+  }, [updateSidebarUiState]);
+
+  const toggleHistoryGroup = useCallback((groupKey: string) => {
+    updateSidebarUiState((current) => ({
+      ...current,
+      expandedHistoryGroups: {
+        ...current.expandedHistoryGroups,
+        [groupKey]: !current.expandedHistoryGroups[groupKey],
+      },
+    }));
+  }, [updateSidebarUiState]);
+
   const mutateDraft = useCallback(
     (mutator: (draft: HttpRequestEntity) => HttpRequestEntity) => {
       updateViewState(
-        (current) => {
-          if (!current.draft) {
-            return current;
-          }
-
-          const next = cloneViewState(current);
-          const draft = next.draft;
-          if (!draft) {
-            return next;
-          }
-          const nextDraft = mutator(draft);
-          next.draft = nextDraft;
-          next.draft.updatedAt = new Date().toISOString();
-          next.dirty = true;
-          return next;
-        },
+        (current) => updateDraftLocally(current, mutator),
         { emitDraft: true }
       );
       updateUiState((current) => ({
@@ -190,10 +288,10 @@ export function useWorkbenchController(): WorkbenchController {
   const setRequestTab = useCallback(
     (tab: HttpClientViewState["activeTab"]) => {
       updateViewState(
-        (current) => ({
-          ...cloneViewState(current),
-          activeTab: tab,
-        }),
+        (current) =>
+          patchWorkbenchSession(current, {
+            activeTab: tab,
+          }),
         { emitUiState: true }
       );
     },
@@ -203,10 +301,10 @@ export function useWorkbenchController(): WorkbenchController {
   const setResponseTab = useCallback(
     (tab: HttpClientViewState["responseTab"]) => {
       updateViewState(
-        (current) => ({
-          ...cloneViewState(current),
-          responseTab: tab,
-        }),
+        (current) =>
+          patchWorkbenchSession(current, {
+            responseTab: tab,
+          }),
         { emitUiState: true }
       );
     },
@@ -236,9 +334,10 @@ export function useWorkbenchController(): WorkbenchController {
 
   const setEnvironment = useCallback(
     (environmentId: string | null) => {
-      updateViewState((current) => ({
-        ...cloneViewState(current),
-        activeEnvironmentId: environmentId,
+      updateViewState((current) => setEnvironmentLocally(current, environmentId));
+      updateSidebarUiState((current) => ({
+        ...current,
+        selectedEnvironmentId: environmentId,
       }));
       postMessage({
         type: "httpClient/selectEnvironment",
@@ -247,7 +346,166 @@ export function useWorkbenchController(): WorkbenchController {
         },
       });
     },
+    [postMessage, updateSidebarUiState, updateViewState]
+  );
+
+  const createRequest = useCallback(
+    (collectionId: string | null = null) => {
+      const nextDraft = createWorkbenchScratchRequest(collectionId);
+      updateSidebarUiState((current) => ({
+        ...current,
+        activeTab: "collections",
+        selectedHistoryId: null,
+      }));
+      updateViewState((current) => createScratchRequestLocally(current, nextDraft));
+      updateUiState((current) => ({
+        ...current,
+        lastErrorMessage: "",
+      }));
+      postMessage({
+        type: "httpClient/createRequest",
+        payload: {
+          collectionId,
+          request: cloneRequest(nextDraft),
+        },
+      });
+    },
+    [postMessage, updateSidebarUiState, updateUiState, updateViewState]
+  );
+
+  const createCollection = useCallback(() => {
+    setSidebarTab("collections");
+    postMessage({ type: "httpClient/createCollectionPrompt" });
+  }, [postMessage, setSidebarTab]);
+
+  const renameCollection = useCallback(
+    (collectionId: string) => {
+      postMessage({
+        type: "httpClient/renameCollectionPrompt",
+        payload: { collectionId },
+      });
+    },
+    [postMessage]
+  );
+
+  const deleteCollection = useCallback(
+    (collectionId: string) => {
+      postMessage({
+        type: "httpClient/deleteCollection",
+        payload: { collectionId },
+      });
+    },
+    [postMessage]
+  );
+
+  const createEnvironment = useCallback(() => {
+    setSidebarTab("environments");
+    updateSidebarUiState((current) => ({
+      ...current,
+      selectedEnvironmentId: null,
+    }));
+    postMessage({ type: "httpClient/createEnvironment" });
+  }, [postMessage, setSidebarTab, updateSidebarUiState]);
+
+  const selectRequest = useCallback(
+    (requestId: string) => {
+      updateSidebarUiState((current) => ({
+        ...current,
+        selectedHistoryId: null,
+      }));
+      updateViewState((current) => selectRequestLocally(current, requestId));
+      updateUiState((current) => ({
+        ...current,
+        lastErrorMessage: "",
+      }));
+      postMessage({
+        type: "httpClient/selectRequest",
+        payload: { requestId },
+      });
+    },
+    [postMessage, updateSidebarUiState, updateUiState, updateViewState]
+  );
+
+  const renameRequest = useCallback(
+    (requestId: string) => {
+      postMessage({
+        type: "httpClient/renameRequestPrompt",
+        payload: { requestId },
+      });
+    },
+    [postMessage]
+  );
+
+  const duplicateRequest = useCallback(
+    (requestId: string) => {
+      setPendingRequestAction({ requestId, kind: "duplicate" });
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => {
+          postMessage({
+            type: "httpClient/duplicateRequest",
+            payload: { requestId },
+          });
+        });
+        return;
+      }
+      postMessage({
+        type: "httpClient/duplicateRequest",
+        payload: { requestId },
+      });
+    },
+    [postMessage]
+  );
+
+  const deleteRequest = useCallback(
+    (requestId: string) => {
+      setPendingRequestAction({ requestId, kind: "delete" });
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => {
+          postMessage({
+            type: "httpClient/deleteRequest",
+            payload: { requestId },
+          });
+        });
+        return;
+      }
+      postMessage({
+        type: "httpClient/deleteRequest",
+        payload: { requestId },
+      });
+    },
+    [postMessage]
+  );
+
+  const toggleFavorite = useCallback(
+    (requestId: string, favorite: boolean) => {
+      updateViewState((current) => toggleFavoriteLocally(current, requestId, favorite), {
+        emitDraft: viewStateRef.current.draft?.id === requestId,
+      });
+      postMessage({
+        type: "httpClient/toggleFavorite",
+        payload: { requestId, favorite },
+      });
+    },
     [postMessage, updateViewState]
+  );
+
+  const selectHistory = useCallback(
+    (historyId: string) => {
+      updateSidebarUiState((current) => ({
+        ...current,
+        selectedHistoryId: historyId,
+      }));
+      updateViewState((current) => selectHistoryLocally(current, historyId));
+      updateUiState((current) => ({
+        ...current,
+        lastErrorMessage: "",
+      }));
+      postMessage({
+        type: "httpClient/selectHistory",
+        payload: { historyId },
+      });
+    },
+    [postMessage, updateSidebarUiState, updateUiState, updateViewState]
   );
 
   const updateKeyValue = useCallback(
@@ -321,19 +579,25 @@ export function useWorkbenchController(): WorkbenchController {
   const formatJsonBody = useCallback(() => {
     const currentDraft = viewStateRef.current.draft;
     if (!currentDraft) {
+      notifyToast("没有可格式化的请求体", "warning");
       return false;
     }
 
-    const result = ensureJsonBodyMode(currentDraft.bodyMode, currentDraft.bodyText);
-    const formatted = result.bodyText !== currentDraft.bodyText || result.bodyMode !== currentDraft.bodyMode;
-    mutateDraft((draft) => {
-      const next = cloneRequest(draft);
-      next.bodyMode = result.bodyMode;
-      next.bodyText = result.bodyText;
-      return next;
-    });
-    return formatted;
-  }, [mutateDraft]);
+    try {
+      const formattedText = JSON.stringify(JSON.parse(currentDraft.bodyText || "{}"), null, 2);
+      mutateDraft((draft) => {
+        const next = cloneRequest(draft);
+        next.bodyMode = "json";
+        next.bodyText = formattedText;
+        return next;
+      });
+      notifyToast("JSON 已格式化", "success");
+      return true;
+    } catch {
+      notifyToast("当前内容不是合法 JSON", "warning");
+      return false;
+    }
+  }, [mutateDraft, notifyToast]);
 
   const performSend = useCallback(() => {
     const currentViewState = viewStateRef.current;
@@ -353,13 +617,14 @@ export function useWorkbenchController(): WorkbenchController {
         lastErrorMessage: urlHint,
       }));
       updateViewState(
-        (current) => ({
-          ...cloneViewState(current),
-          response: null,
-          responseTab: "body",
-        }),
+        (current) =>
+          patchWorkbenchSession(current, {
+            response: null,
+            responseTab: "body",
+          }),
         { emitUiState: true }
       );
+      notifyToast(urlHint, "warning", 3000);
       return;
     }
 
@@ -367,11 +632,13 @@ export function useWorkbenchController(): WorkbenchController {
       ...current,
       lastErrorMessage: "",
     }));
-    updateViewState((current) => ({
-      ...cloneViewState(current),
-      requestRunning: true,
-      response: null,
-    }));
+    updateViewState((current) =>
+      patchWorkbenchSession(current, {
+        requestRunning: true,
+        response: null,
+        responseTab: "body",
+      })
+    );
     postMessage({
       type: "httpClient/send",
       payload: {
@@ -380,7 +647,7 @@ export function useWorkbenchController(): WorkbenchController {
         timeoutMs: 30000,
       },
     });
-  }, [postMessage, updateUiState, updateViewState]);
+  }, [notifyToast, postMessage, updateUiState, updateViewState]);
 
   const performSave = useCallback(() => {
     const currentDraft = viewStateRef.current.draft;
@@ -398,14 +665,38 @@ export function useWorkbenchController(): WorkbenchController {
   const performLoadTest = useCallback(() => {
     const currentViewState = viewStateRef.current;
     if (!currentViewState.draft) {
+      notifyToast("没有可压测的请求", "warning");
+      return;
+    }
+
+    if (currentViewState.loadTestProgress?.running) {
+      postMessage({ type: "httpClient/loadTest/stop" });
+      return;
+    }
+
+    const urlHint = buildUrlHint(currentViewState.draft.url);
+    if (urlHint) {
+      updateUiState((current) => ({
+        ...current,
+        lastErrorMessage: urlHint,
+      }));
+      notifyToast(urlHint, "warning", 3000);
       return;
     }
 
     updateViewState(
-      (current) => ({
-        ...cloneViewState(current),
-        responseTab: "loadTest",
-      }),
+      (current) =>
+        patchWorkbenchSession(current, {
+          responseTab: "loadTest",
+          loadTestResult: null,
+          loadTestProgress: {
+            completedRequests: 0,
+            totalRequests: current.loadTestProfile.totalRequests,
+            successCount: 0,
+            failureCount: 0,
+            running: true,
+          },
+        }),
       { emitUiState: true }
     );
     postMessage({
@@ -416,7 +707,7 @@ export function useWorkbenchController(): WorkbenchController {
         profile: { ...currentViewState.loadTestProfile },
       },
     });
-  }, [postMessage, updateViewState]);
+  }, [notifyToast, postMessage, updateUiState, updateViewState]);
 
   const stopLoadTest = useCallback(() => {
     postMessage({ type: "httpClient/loadTest/stop" });
@@ -424,14 +715,14 @@ export function useWorkbenchController(): WorkbenchController {
 
   const setLoadTestProfileField = useCallback(
     (field: "totalRequests" | "concurrency" | "timeoutMs", value: number) => {
-      updateViewState((current) => {
-        const next = cloneViewState(current);
-        next.loadTestProfile = {
-          ...next.loadTestProfile,
-          [field]: Number.isFinite(value) ? value : next.loadTestProfile[field],
-        };
-        return next;
-      });
+      updateViewState((current) =>
+        patchWorkbenchSession(current, {
+          loadTestProfile: {
+            ...current.loadTestProfile,
+            [field]: Number.isFinite(value) ? value : current.loadTestProfile[field],
+          },
+        })
+      );
     },
     [updateViewState]
   );
@@ -441,12 +732,22 @@ export function useWorkbenchController(): WorkbenchController {
   }, [postMessage]);
 
   const copyResponse = useCallback(async () => {
-    await navigator.clipboard.writeText(getDisplayedResponseText(viewStateRef.current.response, uiStateRef.current.responsePretty));
-  }, []);
+    try {
+      await navigator.clipboard.writeText(getDisplayedResponseText(viewStateRef.current.response, uiStateRef.current.responsePretty));
+      notifyToast("响应体已复制到剪贴板", "success");
+    } catch {
+      notifyToast("复制响应体失败", "error");
+    }
+  }, [notifyToast]);
 
   const copyHeaderValue = useCallback(async (value: string) => {
-    await navigator.clipboard.writeText(value);
-  }, []);
+    try {
+      await navigator.clipboard.writeText(value);
+      notifyToast("Header 已复制到剪贴板", "success");
+    } catch {
+      notifyToast("复制 Header 失败", "error");
+    }
+  }, [notifyToast]);
 
   const toggleResponsePretty = useCallback(() => {
     updateUiState((current) => ({
@@ -461,6 +762,154 @@ export function useWorkbenchController(): WorkbenchController {
       responseSearch: keyword,
     }));
   }, [updateUiState]);
+
+  const selectedEnvironment = useMemo(() => {
+    const selectedId =
+      sidebarUiState.selectedEnvironmentId ?? viewState.activeEnvironmentId ?? viewState.config.environments[0]?.id ?? null;
+    if (!selectedId) {
+      return null;
+    }
+    return viewState.config.environments.find((environment) => environment.id === selectedId) ?? null;
+  }, [sidebarUiState.selectedEnvironmentId, viewState.activeEnvironmentId, viewState.config.environments]);
+
+  useEffect(() => {
+    updateSidebarUiState((current) => {
+      const hasCurrentSelection =
+        current.selectedEnvironmentId !== null &&
+        viewState.config.environments.some((environment) => environment.id === current.selectedEnvironmentId);
+      if (hasCurrentSelection) {
+        return current;
+      }
+      const fallbackId = viewState.activeEnvironmentId ?? viewState.config.environments[0]?.id ?? null;
+      if (fallbackId === current.selectedEnvironmentId) {
+        return current;
+      }
+      return {
+        ...current,
+        selectedEnvironmentId: fallbackId,
+      };
+    });
+  }, [updateSidebarUiState, viewState.activeEnvironmentId, viewState.config.environments]);
+
+  useEffect(() => {
+    if (!selectedEnvironment) {
+      setEnvironmentDraft(null);
+      return;
+    }
+    setEnvironmentDraft({
+      environmentId: selectedEnvironment.id,
+      name: selectedEnvironment.name,
+      variables: Object.entries(selectedEnvironment.variables).map(([key, value]) => createEnvironmentRow(key, value)),
+      dirty: false,
+    });
+  }, [createEnvironmentRow, selectedEnvironment?.id, selectedEnvironment?.updatedAt]);
+
+  const setEnvironmentDraftName = useCallback((name: string) => {
+    setEnvironmentDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        name,
+        dirty: true,
+      };
+    });
+  }, []);
+
+  const updateEnvironmentVariable = useCallback((id: string, field: "key" | "value", value: string) => {
+    setEnvironmentDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        dirty: true,
+        variables: current.variables.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
+      };
+    });
+  }, []);
+
+  const addEnvironmentVariable = useCallback(() => {
+    setEnvironmentDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        dirty: true,
+        variables: [...current.variables, createEnvironmentRow()],
+      };
+    });
+  }, [createEnvironmentRow]);
+
+  const removeEnvironmentVariable = useCallback((id: string) => {
+    setEnvironmentDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        dirty: true,
+        variables: current.variables.filter((item) => item.id !== id),
+      };
+    });
+  }, []);
+
+  const saveEnvironment = useCallback(() => {
+    if (!selectedEnvironment || !environmentDraft) {
+      notifyToast("没有可保存的环境", "warning");
+      return;
+    }
+    const variables = Object.fromEntries(
+      environmentDraft.variables
+        .map((item) => [item.key.trim(), item.value] as const)
+        .filter(([key]) => key.length > 0)
+    );
+    postMessage({
+      type: "httpClient/saveEnvironment",
+      payload: {
+        environment: {
+          ...selectedEnvironment,
+          name: environmentDraft.name,
+          variables,
+        },
+      },
+    });
+  }, [environmentDraft, notifyToast, postMessage, selectedEnvironment]);
+
+  const deleteEnvironment = useCallback(() => {
+    if (!selectedEnvironment) {
+      notifyToast("请选择一个环境", "warning");
+      return;
+    }
+    postMessage({
+      type: "httpClient/deleteEnvironment",
+      payload: {
+        environmentId: selectedEnvironment.id,
+      },
+    });
+  }, [notifyToast, postMessage, selectedEnvironment]);
+
+  const historyGroups = useMemo(() => {
+    return buildHistoryGroups(viewState, sidebarUiState.keyword, sidebarUiState.expandedHistoryGroups, sidebarUiState.selectedHistoryId);
+  }, [sidebarUiState.expandedHistoryGroups, sidebarUiState.keyword, sidebarUiState.selectedHistoryId, viewState]);
+
+  const collectionGroups = useMemo(() => {
+    return buildCollectionGroups(viewState.config, sidebarUiState.keyword, viewState.draft);
+  }, [sidebarUiState.keyword, viewState]);
+
+  const favoriteRequests = useMemo(() => {
+    return buildFavoriteRequests(viewState.config, sidebarUiState.keyword, viewState.draft);
+  }, [sidebarUiState.keyword, viewState]);
+
+  const ungroupedRequests = useMemo(() => {
+    return buildUngroupedRequests(viewState.config, sidebarUiState.keyword, viewState.draft);
+  }, [sidebarUiState.keyword, viewState]);
+
+  const environmentItems = useMemo(() => {
+    return buildEnvironmentItems(viewState, sidebarUiState.keyword);
+  }, [sidebarUiState.keyword, viewState]);
 
   useEffect(() => {
     postMessage({
@@ -486,6 +935,16 @@ export function useWorkbenchController(): WorkbenchController {
       if (payload.type === "httpClient/state") {
         setHasHostState(true);
         pendingAckSourceRef.current = "state";
+        setPendingRequestAction(null);
+        updateSidebarUiState((current) => {
+          if (current.selectedHistoryId === payload.payload.selectedHistoryId) {
+            return current;
+          }
+          return {
+            ...current,
+            selectedHistoryId: payload.payload.selectedHistoryId,
+          };
+        });
       } else if (payload.type === "httpClient/response") {
         pendingAckSourceRef.current = "response";
         logFrontend("info", "httpClient/response", "response rendered");
@@ -508,7 +967,7 @@ export function useWorkbenchController(): WorkbenchController {
     return () => {
       window.removeEventListener("message", onMessage);
     };
-  }, [bootstrap.buildId, importCurl, logFrontend, performLoadTest, performSave, performSend, postMessage, replaceUiState, replaceViewState]);
+  }, [bootstrap.buildId, importCurl, logFrontend, performLoadTest, performSave, performSend, postMessage, replaceUiState, replaceViewState, updateSidebarUiState]);
 
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
@@ -564,16 +1023,57 @@ export function useWorkbenchController(): WorkbenchController {
     };
   }, [performSave, performSend]);
 
+  const displayedResponseText = useMemo(() => {
+    return getDisplayedResponseText(viewState.response, uiState.responsePretty);
+  }, [uiState.responsePretty, viewState.response]);
+
+  const highlightedResponseHtml = useMemo(() => {
+    if (!viewState.response) {
+      return "";
+    }
+    if (uiState.responsePretty && viewState.response.isJson) {
+      return renderJsonHighlightedText(getDisplayedResponseText(viewState.response, true), uiState.responseSearch);
+    }
+    return highlightText(displayedResponseText, uiState.responseSearch);
+  }, [displayedResponseText, uiState.responsePretty, uiState.responseSearch, viewState.response]);
+
   return {
     buildId: bootstrap.buildId,
     viewState,
     uiState,
+    sidebarUiState,
     hasHostState,
-    displayedResponseText: getDisplayedResponseText(viewState.response, uiState.responsePretty),
-    highlightedResponseHtml:
-      viewState.response && uiState.responsePretty && viewState.response.isJson
-        ? renderJsonHighlightedText(getDisplayedResponseText(viewState.response, true), uiState.responseSearch)
-        : "",
+    displayedResponseText,
+    highlightedResponseHtml,
+    historyGroups,
+    collectionGroups,
+    favoriteRequests,
+    ungroupedRequests,
+    environmentItems,
+    selectedEnvironment,
+    environmentDraft,
+    pendingRequestAction,
+    setSidebarTab,
+    setSidebarKeyword,
+    toggleHistoryGroup,
+    createRequest,
+    createCollection,
+    renameCollection,
+    deleteCollection,
+    createEnvironment,
+    selectRequest,
+    renameRequest,
+    duplicateRequest,
+    deleteRequest,
+    toggleFavorite,
+    selectHistory,
+    selectEnvironment: setEnvironment,
+    setEnvironmentDraftName,
+    updateEnvironmentVariable,
+    addEnvironmentVariable,
+    removeEnvironmentVariable,
+    saveEnvironment,
+    deleteEnvironment,
     setRequestTab,
     setResponseTab,
     setMethod,
@@ -604,4 +1104,22 @@ function createId(): string {
   }
 
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function createWorkbenchScratchRequest(collectionId: string | null): HttpRequestEntity {
+  const now = new Date().toISOString();
+  return {
+    id: createId(),
+    collectionId,
+    name: "新请求",
+    method: "GET",
+    url: "",
+    params: [createEmptyKeyValue(createId)],
+    headers: [createEmptyKeyValue(createId)],
+    bodyMode: "none",
+    bodyText: "",
+    favorite: false,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
