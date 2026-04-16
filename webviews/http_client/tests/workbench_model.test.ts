@@ -53,8 +53,18 @@ test("workbench_model: React workbench 纯逻辑与旧协议保持一致", async
 
   await logger.step("验证响应文本展示与转义输出");
   const response = createResponseResult();
-  assert.equal(getDisplayedResponseText(response, true), response.bodyRawText);
-  assert.equal(getDisplayedResponseText(response, false), '{\\"message\\":\\"获取成功\\",\\"count\\":1}');
+  assert.equal(getDisplayedResponseText(response, true), "{\"message\":\"获取成功\n下一行\",\"count\":1}");
+  assert.equal(getDisplayedResponseText(response, false), "{\"message\":\"获取成功\\n下一行\",\"count\":1}");
+
+  const plainTextResponse: HttpResponseResult = {
+    ...response,
+    isJson: false,
+    bodyRawText: "第一行\n第二行",
+    bodyText: "第一行\n第二行",
+    bodyPrettyText: "第一行\n第二行",
+  };
+  assert.equal(getDisplayedResponseText(plainTextResponse, true), "第一行\n第二行");
+  assert.equal(getDisplayedResponseText(plainTextResponse, false), "第一行\\n第二行");
 
   const rawHighlighted = highlightText("first line\n获取成功\nsecond line", "成功");
   assert.match(rawHighlighted, /<mark>成功<\/mark>/);
@@ -207,9 +217,9 @@ function createResponseResult(): HttpResponseResult {
     ok: true,
     status: 200,
     statusText: "OK",
-    bodyRawText: "{\"message\":\"获取成功\",\"count\":1}",
-    bodyText: "{\"message\":\"获取成功\",\"count\":1}",
-    bodyPrettyText: "{\n  \"message\": \"获取成功\",\n  \"count\": 1\n}",
+    bodyRawText: "{\"message\":\"\\u83b7\\u53d6\\u6210\\u529f\\n\\u4e0b\\u4e00\\u884c\",\"count\":1}",
+    bodyText: "{\"message\":\"获取成功\\n下一行\",\"count\":1}",
+    bodyPrettyText: "{\n  \"message\": \"获取成功\\n下一行\",\n  \"count\": 1\n}",
     isJson: true,
     headers: [
       { key: "content-type", value: "application/json; charset=utf-8" },

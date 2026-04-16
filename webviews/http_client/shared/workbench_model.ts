@@ -392,12 +392,118 @@ export function getDisplayedResponseText(response: HttpResponseResult | null, re
     return "";
   }
 
-  return responsePretty ? response.bodyRawText : escapeResponseText(response.bodyRawText);
+  const displayText = normalizeResponseText(response.bodyText);
+  return responsePretty ? displayText : escapeResponseText(displayText);
+}
+
+export function normalizeResponseText(source: string): string {
+  const input = String(source ?? "");
+  if (!input.includes("\\")) {
+    return input;
+  }
+
+  let output = "";
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (char !== "\\") {
+      output += char;
+      continue;
+    }
+
+    const next = input[index + 1];
+    if (!next) {
+      output += char;
+      continue;
+    }
+
+    switch (next) {
+      case "n":
+        output += "\n";
+        index += 1;
+        break;
+      case "r":
+        output += "\r";
+        index += 1;
+        break;
+      case "t":
+        output += "\t";
+        index += 1;
+        break;
+      case "b":
+        output += "\b";
+        index += 1;
+        break;
+      case "f":
+        output += "\f";
+        index += 1;
+        break;
+      case "v":
+        output += "\v";
+        index += 1;
+        break;
+      case "0":
+        output += "\0";
+        index += 1;
+        break;
+      case "u": {
+        const hex = input.slice(index + 2, index + 6);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          output += String.fromCharCode(Number.parseInt(hex, 16));
+          index += 5;
+        } else {
+          output += char;
+        }
+        break;
+      }
+      default:
+        output += char;
+        break;
+    }
+  }
+
+  return output;
 }
 
 export function escapeResponseText(source: string): string {
-  const escaped = JSON.stringify(String(source ?? ""));
-  return escaped.length >= 2 ? escaped.slice(1, -1) : escaped;
+  const input = String(source ?? "");
+  let output = "";
+
+  for (const char of input) {
+    switch (char) {
+      case "\n":
+        output += "\\n";
+        break;
+      case "\r":
+        output += "\\r";
+        break;
+      case "\t":
+        output += "\\t";
+        break;
+      case "\b":
+        output += "\\b";
+        break;
+      case "\f":
+        output += "\\f";
+        break;
+      case "\v":
+        output += "\\v";
+        break;
+      case "\0":
+        output += "\\0";
+        break;
+      default: {
+        const codePoint = char.codePointAt(0);
+        if (codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f)) {
+          output += `\\x${codePoint.toString(16).padStart(2, "0")}`;
+        } else {
+          output += char;
+        }
+      }
+    }
+  }
+
+  return output;
 }
 
 export function getSelectedHistoryOrdinal(history: HttpHistoryRecord[], selectedHistoryId: string | null, limit = 30): number | null {
