@@ -374,7 +374,7 @@ function renderResponseTab(controller: WorkbenchController, elapsedMs: number): 
     if (uiState.lastErrorMessage) {
       return (
         <div className="empty-panel error-panel">
-          <strong>请求失败</strong>
+          <strong>⚠ 请求失败</strong>
           <span>{uiState.lastErrorMessage}</span>
         </div>
       );
