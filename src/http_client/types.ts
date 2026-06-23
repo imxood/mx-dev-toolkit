@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { ulid } from "ulid";
 import { ToastNotifyMessage, ToastToWebviewMessage } from "../toast/types";
 
 export const HTTP_CLIENT_CONFIG_VERSION = 2;
@@ -44,6 +45,12 @@ export interface HttpResolvedRequest {
 
 export interface HttpRequestEntity {
   id: string;
+  /**
+   * 排序键, ULID (26 字符 Crockford base32), 字典序 = 时间序.
+   * 拖拽重排时只改本字段, 写盘 O(1); 数组按 sortId 升序排就是用户最后看到的顺序.
+   * id 仍然是不变的主键, 改 URL / 改名称都不会重新分配.
+   */
+  sortId: string;
   name: string;
   method: HttpMethod;
   url: string;
@@ -231,6 +238,8 @@ export interface HttpClientResponseAckPayload {
 
 export interface HttpClientMoveRequestPayload {
   requestId: string;
+  /** 目标集合里要插入到此请求之前; null 表示追加到目标集合末尾. */
+  beforeRequestId: string | null;
   targetCollectionId: string;
 }
 
@@ -326,6 +335,7 @@ export function createDefaultRequest(name = "新请求"): HttpRequestEntity {
   const now = createNowIsoString();
   return {
     id: randomUUID(),
+    sortId: ulid(),
     name,
     method: "GET",
     url: "",
@@ -380,6 +390,7 @@ export function normalizeBodyMode(method: HttpMethod, bodyMode: HttpBodyMode): H
 export function sanitizeRequestEntity(input: HttpRequestEntity): HttpRequestEntity {
   return {
     ...input,
+    sortId: input.sortId && input.sortId.length === 26 ? input.sortId : ulid(),
     name: input.name.trim() || "未命名请求",
     method: isHttpMethod(input.method) ? input.method : "GET",
     url: input.url.trim(),
@@ -393,10 +404,6 @@ export function sanitizeRequestEntity(input: HttpRequestEntity): HttpRequestEnti
     lastResponseSnapshot: input.lastResponseSnapshot ?? null,
     updatedAt: createNowIsoString(),
   };
-}
-
-export function buildRequestUrlKey(method: HttpMethod | string, url: string): string {
-  return `${String(method || "").toUpperCase()}|${(url || "").trim()}`;
 }
 
 export function clipResponseForSnapshot(response: HttpResponseResult): { response: HttpResponseResult; truncated: boolean } {

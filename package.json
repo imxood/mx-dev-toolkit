@@ -122,6 +122,7 @@
   },
   "dependencies": {
     "react": "19.2.5",
-    "react-dom": "19.2.5"
+    "react-dom": "19.2.5",
+    "ulid": "^3.0.2"
   }
 }

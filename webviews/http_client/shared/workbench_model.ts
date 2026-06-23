@@ -7,6 +7,7 @@ import type {
   HttpRequestEntity,
   HttpResponseResult,
 } from "../../../src/http_client/types";
+import { betweenSortIds, newSortId } from "./sort_id";
 
 export interface WorkbenchUiState {
   responseSearch: string;
@@ -290,25 +291,62 @@ export function selectRequestLocally(
 export function moveRequestLocally(
   currentViewState: HttpClientViewState,
   requestId: string,
+  beforeRequestId: string | null,
   targetCollectionId: string
 ): HttpClientViewState {
   const lookup = findRequestInCollections(currentViewState, requestId);
-  if (!lookup || lookup.collection.id === targetCollectionId) {
+  if (!lookup) {
     return currentViewState;
   }
-  const request = lookup.request;
+  const target = currentViewState.config.collections.find((item) => item.id === targetCollectionId)
+    ?? lookup.collection;
+
+  // filter 之后再算 insertIndex, 跟 currentIndex 比较做 no-op 检测
+  if (target.id === lookup.collection.id) {
+    if (beforeRequestId === requestId) {
+      return currentViewState;
+    }
+    const currentIndex = lookup.collection.requests.findIndex((item) => item.id === requestId);
+    const filtered = lookup.collection.requests.filter((item) => item.id !== requestId);
+    const insertIndex = beforeRequestId
+      ? filtered.findIndex((item) => item.id === beforeRequestId)
+      : filtered.length;
+    const safeInsertIndex = insertIndex < 0 ? filtered.length : insertIndex;
+    if (safeInsertIndex === currentIndex) {
+      return currentViewState;
+    }
+  }
+
+  // filter 之后算 safeIndex
+  const filtered = target.requests.filter((item) => item.id !== requestId);
+  const insertIndex = beforeRequestId
+    ? filtered.findIndex((item) => item.id === beforeRequestId)
+    : filtered.length;
+  const safeIndex = insertIndex < 0 ? filtered.length : insertIndex;
+
+  const prevSortId = safeIndex > 0 ? filtered[safeIndex - 1].sortId : null;
+  const nextSortId = safeIndex < filtered.length ? filtered[safeIndex].sortId : null;
+  const newSortId = betweenSortIds(prevSortId, nextSortId, new Set(filtered.map((item) => item.sortId)));
   const now = new Date().toISOString();
-  const movedRequest = { ...cloneRequest(request), updatedAt: now };
+  const movingRequest = { ...cloneRequest(lookup.request), sortId: newSortId, updatedAt: now };
+
   return {
     ...currentViewState,
     config: {
       ...currentViewState.config,
       collections: currentViewState.config.collections.map((collection) => {
-        if (collection.id === lookup.collection.id) {
+        if (collection.id === lookup.collection.id && collection.id !== target.id) {
           return { ...collection, requests: collection.requests.filter((item) => item.id !== requestId) };
         }
-        if (collection.id === targetCollectionId) {
-          return { ...collection, requests: [movedRequest, ...collection.requests] };
+        if (collection.id === target.id && collection.id !== lookup.collection.id) {
+          const next = [...collection.requests];
+          next.splice(safeIndex, 0, movingRequest);
+          return { ...collection, requests: next };
+        }
+        if (collection.id === target.id && collection.id === lookup.collection.id) {
+          const next = collection.requests.filter((item) => item.id !== requestId);
+          next.splice(safeIndex, 0, movingRequest);
+          return { ...collection, requests: next };
         }
         return collection;
       }),
@@ -650,6 +688,7 @@ function cloneResponse(response: HttpResponseResult): HttpResponseResult {
 function createFallbackDraft(now: string): HttpRequestEntity {
   return {
     id: "fallback-request",
+    sortId: newSortId(),
     name: "新请求",
     method: "GET",
     url: "",

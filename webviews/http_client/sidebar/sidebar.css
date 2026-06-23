@@ -219,7 +219,8 @@ body {
   flex-direction: column;
   gap: 6px;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 6px 0 4px;
 }
 
@@ -338,12 +339,17 @@ body {
   background: transparent;
 }
 
-.group-items.collection-body.drop-target {
-  outline: 2px dashed rgba(117, 190, 255, 0.55);
-  outline-offset: -2px;
-  background: rgba(117, 190, 255, 0.08);
-  border-radius: var(--radius);
-  transition: background-color 120ms ease;
+/* 拖拽重排插入位置指示线. 用 box-shadow inset 避免 border 抖动 / 占盒模型. */
+.req-item.drop-above {
+  box-shadow: inset 0 2px 0 0 #75beff;
+}
+
+.req-item.drop-below {
+  box-shadow: inset 0 -2px 0 0 #75beff;
+}
+
+.group-items.collection-body {
+  position: relative;
 }
 
 .collection-item,
@@ -390,8 +396,13 @@ body {
 
 .req-meta {
   display: flex;
+  align-items: center;
   min-width: 0;
   gap: 4px;
+}
+
+.req-meta .method-pill {
+  flex-shrink: 0;
 }
 
 .req-meta .status,

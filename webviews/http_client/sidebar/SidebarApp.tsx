@@ -37,7 +37,7 @@ interface SidebarViewController {
   duplicateRequest(requestId: string): void;
   deleteRequest(requestId: string): void;
   exportCurl(requestId: string): void;
-  moveRequest(requestId: string, targetCollectionId: string): void;
+  moveRequest(requestId: string, beforeRequestId: string | null, targetCollectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -577,29 +577,63 @@ function CollectionSection({
   onCollectionContextMenu,
   onRequestContextMenu,
 }: CollectionSectionProps): React.ReactElement {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  const clearDropIndicators = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      return;
+    }
+    for (const child of Array.from(body.querySelectorAll<HTMLElement>(".req-item.drop-above, .req-item.drop-below"))) {
+      child.classList.remove("drop-above", "drop-below");
+    }
+  }, []);
+
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    event.currentTarget.classList.add("drop-target");
-  }, []);
+    const body = bodyRef.current;
+    if (!body) {
+      return;
+    }
+    const items = Array.from(body.querySelectorAll<HTMLElement>(".req-item"));
+    let matched: { element: HTMLElement; position: "above" | "below" } | null = null;
+    for (const item of items) {
+      const rect = item.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      if (event.clientY < midpoint) {
+        matched = { element: item, position: "above" };
+        break;
+      }
+    }
+    if (!matched && items.length > 0) {
+      matched = { element: items[items.length - 1], position: "below" };
+    }
+    clearDropIndicators();
+    if (matched) {
+      matched.element.classList.add(matched.position === "above" ? "drop-above" : "drop-below");
+    }
+  }, [clearDropIndicators]);
 
   const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (event.currentTarget === event.target) {
-      event.currentTarget.classList.remove("drop-target");
+      clearDropIndicators();
     }
-  }, []);
+  }, [clearDropIndicators]);
 
   const handleDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
       event.preventDefault();
-      event.currentTarget.classList.remove("drop-target");
+      const body = bodyRef.current;
+      const beforeRequestId = body?.querySelector<HTMLElement>(".req-item.drop-above")?.dataset.reqId ?? null;
+      clearDropIndicators();
       const requestId = event.dataTransfer.getData("text/plain");
       if (!requestId) {
         return;
       }
-      window.__mxSidebarMoveRequest?.(requestId, group.collectionId);
+      window.__mxSidebarMoveRequest?.(requestId, beforeRequestId, group.collectionId);
     },
-    [group.collectionId]
+    [clearDropIndicators, group.collectionId]
   );
 
   return (
@@ -620,6 +654,7 @@ function CollectionSection({
       </div>
       {group.expanded ? (
         <div
+          ref={bodyRef}
           className="group-items collection-body"
           data-collection-id={group.collectionId}
           onDragOver={handleDragOver}
@@ -703,10 +738,10 @@ function RequestRow({ request, activeRequestId, onContextMenu }: RequestRowProps
         }}
         onContextMenu={onContextMenu ? (event) => onContextMenu(event, request) : undefined}
       >
-        <span className={`method-pill method-${request.method.toLowerCase()}`}>{request.method}</span>
         <span className="req-main">
           <span className="req-name">{request.name || request.url || "未命名请求"}</span>
           <span className={`req-meta ${badge.className === "neutral" ? "neutral" : ""}`}>
+            <span className={`method-pill method-${request.method.toLowerCase()}`}>{request.method}</span>
             <span className={`status ${badge.className}`}>{badge.label}</span>
             {badge.durationLabel ? <span className="duration">{badge.durationLabel}</span> : null}
             {timeLabel ? <span className="time">{timeLabel}</span> : null}
@@ -875,6 +910,6 @@ function resolveMenuPosition(event: React.MouseEvent<HTMLElement>, root: HTMLDiv
 declare global {
   interface Window {
     __mxSidebarSelectRequest?: (requestId: string) => void;
-    __mxSidebarMoveRequest?: (requestId: string, targetCollectionId: string) => void;
+    __mxSidebarMoveRequest?: (requestId: string, beforeRequestId: string | null, targetCollectionId: string) => void;
   }
 }

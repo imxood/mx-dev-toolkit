@@ -15,6 +15,7 @@ import {
   type SidebarUiState,
 } from "../shared/sidebar_model";
 import { getVscodeApi } from "../shared/vscode";
+import { betweenSortIds } from "../shared/sort_id";
 
 export interface SidebarController {
   buildId: string;
@@ -39,7 +40,7 @@ export interface SidebarController {
   duplicateRequest(requestId: string): void;
   deleteRequest(requestId: string): void;
   exportCurl(requestId: string): void;
-  moveRequest(requestId: string, targetCollectionId: string): void;
+  moveRequest(requestId: string, beforeRequestId: string | null, targetCollectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -219,7 +220,7 @@ export function useSidebarController(): SidebarController {
   );
 
   const moveRequest = useCallback(
-    (requestId: string, targetCollectionId: string) => {
+    (requestId: string, beforeRequestId: string | null, targetCollectionId: string) => {
       const current = viewStateRef.current;
       if (!current) {
         return;
@@ -227,20 +228,51 @@ export function useSidebarController(): SidebarController {
       const lookup = current.config.collections
         .flatMap((collection) => collection.requests.map((request) => ({ request, collection })))
         .find((entry) => entry.request.id === requestId);
-      if (!lookup || lookup.collection.id === targetCollectionId) {
+      if (!lookup) {
         return;
       }
-      const movedRequest: HttpRequestEntity = { ...lookup.request, updatedAt: new Date().toISOString() };
+      const target = current.config.collections.find((item) => item.id === targetCollectionId) ?? lookup.collection;
+      const insertIndex = beforeRequestId
+        ? target.requests.findIndex((item) => item.id === beforeRequestId)
+        : target.requests.length;
+      const safeIndex = insertIndex < 0 ? target.requests.length : insertIndex;
+
+      if (target.id === lookup.collection.id) {
+        const currentIndex = lookup.collection.requests.findIndex((item) => item.id === requestId);
+        if (currentIndex === safeIndex || currentIndex + 1 === safeIndex) {
+          return;
+        }
+      }
+
+      const prevSortId = safeIndex > 0 ? target.requests[safeIndex - 1].sortId : null;
+      const nextSortId =
+        safeIndex < target.requests.length ? target.requests[safeIndex].sortId : null;
+      const newSortId = betweenSortIds(prevSortId, nextSortId, new Set(target.requests.map((item) => item.sortId)));
+      const movingRequest: HttpRequestEntity = {
+        ...lookup.request,
+        sortId: newSortId,
+        updatedAt: new Date().toISOString(),
+      };
+
       const nextState: HttpClientViewState = {
         ...current,
         config: {
           ...current.config,
           collections: current.config.collections.map((collection) => {
-            if (collection.id === lookup.collection.id) {
+            if (collection.id === lookup.collection.id && collection.id !== target.id) {
               return { ...collection, requests: collection.requests.filter((item) => item.id !== requestId) };
             }
-            if (collection.id === targetCollectionId) {
-              return { ...collection, requests: [movedRequest, ...collection.requests] };
+            if (collection.id === target.id && collection.id !== lookup.collection.id) {
+              const next = [...collection.requests];
+              next.splice(safeIndex, 0, movingRequest);
+              return { ...collection, requests: next };
+            }
+            if (collection.id === target.id && collection.id === lookup.collection.id) {
+              const oldIndex = collection.requests.findIndex((item) => item.id === requestId);
+              const next = collection.requests.filter((item) => item.id !== requestId);
+              const adjustedIndex = safeIndex > oldIndex ? safeIndex - 1 : safeIndex;
+              next.splice(Math.max(0, Math.min(adjustedIndex, next.length)), 0, movingRequest);
+              return { ...collection, requests: next };
             }
             return collection;
           }),
@@ -249,7 +281,7 @@ export function useSidebarController(): SidebarController {
       setViewState(nextState);
       postMessageAfterPaint({
         type: "httpClientSidebar/moveRequest",
-        payload: { requestId, targetCollectionId },
+        payload: { requestId, beforeRequestId, targetCollectionId },
       });
       const targetCollection = nextState.config.collections.find((collection) => collection.id === targetCollectionId);
       window.__mxToastCenter?.push({
@@ -404,7 +436,8 @@ export function useSidebarController(): SidebarController {
 
   // 把 moveRequest / selectRequest 暴露到 window, 让 SidebarView 内部使用
   useEffect(() => {
-    window.__mxSidebarMoveRequest = (requestId, targetCollectionId) => moveRequest(requestId, targetCollectionId);
+    window.__mxSidebarMoveRequest = (requestId, beforeRequestId, targetCollectionId) =>
+      moveRequest(requestId, beforeRequestId, targetCollectionId);
     window.__mxSidebarSelectRequest = (requestId) => selectRequest(requestId);
     return () => {
       delete window.__mxSidebarMoveRequest;

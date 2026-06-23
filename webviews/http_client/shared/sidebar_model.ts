@@ -39,7 +39,7 @@ export type SidebarToExtensionMessage =
   | { type: "httpClientSidebar/renameRequest"; payload: { requestId: string; name: string } }
   | { type: "httpClientSidebar/duplicateRequest"; payload: { requestId: string } }
   | { type: "httpClientSidebar/deleteRequest"; payload: { requestId: string } }
-  | { type: "httpClientSidebar/moveRequest"; payload: { requestId: string; targetCollectionId: string } }
+  | { type: "httpClientSidebar/moveRequest"; payload: { requestId: string; beforeRequestId: string | null; targetCollectionId: string } }
   | { type: "httpClientSidebar/exportCurl"; payload: { requestId: string } }
   | { type: "httpClientSidebar/selectRequest"; payload: { requestId: string } }
   | { type: "httpClientSidebar/selectEnvironment"; payload: { environmentId: string | null } }

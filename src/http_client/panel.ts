@@ -245,7 +245,11 @@ export class HttpClientPanelController implements vscode.Disposable {
         await this.duplicateRequest(message.payload.requestId);
         return;
       case "httpClient/moveRequest":
-        await this.moveRequest(message.payload.requestId, message.payload.targetCollectionId);
+        await this.moveRequest(
+          message.payload.requestId,
+          message.payload.beforeRequestId,
+          message.payload.targetCollectionId
+        );
         return;
       case "httpClient/exportCurl":
         await this.exportCurlForRequest(message.payload.requestId);
@@ -432,7 +436,7 @@ export class HttpClientPanelController implements vscode.Disposable {
   ): Promise<HttpRequestEntity> {
     try {
       this.channel.appendLine(`[HttpClient] snapshot upsert started method=${request.method} url=${request.url}`);
-      const updated = await this.store.upsertRequestByUrl(request, response, this.defaultCollectionIdFor(request));
+      const updated = await this.store.upsertRequestById(request, response, this.defaultCollectionIdFor(request));
       this.channel.appendLine(`[HttpClient] snapshot saved requestId=${updated.id} status=${updated.lastStatus}`);
       return updated;
     } catch (error) {
@@ -624,21 +628,21 @@ export class HttpClientPanelController implements vscode.Disposable {
     }
   }
 
-  private async moveRequest(requestId: string, targetCollectionId: string): Promise<void> {
+  private async moveRequest(
+    requestId: string,
+    beforeRequestId: string | null,
+    targetCollectionId: string
+  ): Promise<void> {
     try {
-      const lookup = this.store.findRequestById(requestId);
-      if (!lookup) {
-        await this.postError("请求不存在");
-        return;
-      }
-      if (lookup.collection.id === targetCollectionId) {
-        return;
-      }
-      const updated = await this.store.moveRequest(requestId, targetCollectionId);
+      const updated = await this.store.moveRequest(requestId, beforeRequestId, targetCollectionId);
       const config = await this.store.ensureInitialized();
-      const target = config.collections.find((item) => item.id === targetCollectionId);
-      await this.notifyToast(`已移至 ${target?.name ?? "目标集合"}`, "success");
-      this.channel.appendLine(`[HttpClient] request moved id=${requestId} target=${targetCollectionId} status=${updated.lastStatus}`);
+      const lookup = this.store.findRequestById(requestId);
+      if (lookup) {
+        await this.notifyToast(`已移至 ${lookup.collection.name ?? "目标集合"}`, "success");
+      }
+      this.channel.appendLine(
+        `[HttpClient] request moved id=${requestId} target=${targetCollectionId} before=${beforeRequestId ?? "end"} status=${updated.lastStatus}`
+      );
       await this.postState();
     } catch (error) {
       await this.postError((error as Error).message);

@@ -103,7 +103,7 @@ test("panel: 发送请求后自动 upsert 集合快照, 并在 webview 上展示
     timeoutMs: 30000,
   });
 
-  const lookup = store.findRequestByUrl(request.method, request.url);
+  const lookup = store.findRequestById(request.id);
   assert.ok(lookup, "默认集合应自动 upsert 一个新请求");
   assert.equal(lookup.collection.id, HTTP_CLIENT_DEFAULT_COLLECTION_ID);
   assert.equal(lookup.request.lastStatus, 200);
@@ -125,7 +125,7 @@ test("panel: 选择已有请求时应自动加载 lastResponseSnapshot", async (
   request.method = "POST";
   request.url = "http://iot.iotim.com/ehong/tool/GetMemberInfo";
   const response = buildResponse(200, "{\"ok\":true}");
-  await store.upsertRequestByUrl(request, response);
+  await store.upsertRequestById(request, response);
 
   const messages: ExtensionToWebviewMessage[] = [];
   const controller = createPanelController(
@@ -160,7 +160,7 @@ test("panel: moveRequest 应跨集合搬运请求并推送整包 state", async (
   const request = createDefaultRequest("查询");
   request.method = "POST";
   request.url = "http://example.com/api";
-  await store.upsertRequestByUrl(request, buildResponse(200, "{}"));
+  await store.upsertRequestById(request, buildResponse(200, "{}"));
   const products = await store.createCollection("产品 API");
 
   const messages: ExtensionToWebviewMessage[] = [];
@@ -204,7 +204,7 @@ test("panel: exportCurl 应基于已保存请求生成 cURL 命令并回推到 w
   ];
   request.bodyMode = "json";
   request.bodyText = "{\"k\":1}";
-  await store.upsertRequestByUrl(request, buildResponse(200, "{}"));
+  await store.upsertRequestById(request, buildResponse(200, "{}"));
 
   const messages: ExtensionToWebviewMessage[] = [];
   const controller = createPanelController(

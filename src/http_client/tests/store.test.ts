@@ -42,35 +42,146 @@ test("store: 配置初始化, 请求内嵌集合, 快照持久化与默认集合
   assert.equal(reloadedConfig.collections[0].requests.length, 1);
   assert.equal(reloadedConfig.collections[0].requests[0].id, saved.id);
 
-  await logger.step("upsertRequestByUrl 自动按 method+url 查找; 新建 URL 时落到默认集合顶部");
+  await logger.step("upsertRequestById 自动按 id 查找; 新 id 时落到默认集合顶部");
   const response = buildResponse(200, "{\"ok\":true}", 128);
-  const updated = await store.upsertRequestByUrl(request, response);
+  const updated = await store.upsertRequestById(request, response);
   assert.equal(updated.lastStatus, 200);
   assert.equal(updated.lastResponseSnapshot?.status, 200);
   const next = await store.loadConfig();
   assert.equal(next.collections[0].requests[0].id, updated.id);
   assert.equal(next.collections[0].requests[0].lastStatus, 200);
 
-  await logger.step("二次 upsert 命中同一 method+url 时不新增记录, 只更新快照");
+  await logger.step("二次 upsert 命中同一 id 时不新增记录, 只更新快照 (允许同名不同 url 共存)");
   const later = buildResponse(201, "{\"ok\":true}", 256);
-  const updatedAgain = await store.upsertRequestByUrl(request, later);
+  const updatedAgain = await store.upsertRequestById(request, later);
   assert.equal(updatedAgain.id, updated.id);
   const finalConfig = await store.loadConfig();
   assert.equal(finalConfig.collections[0].requests.length, 1);
+
+  await logger.step("改 url 后 upsert 仍命中同一 id, 不按 url 去重");
+  const renamedRequest = createDefaultRequest("同 id 不同 url");
+  renamedRequest.id = request.id;
+  renamedRequest.url = "http://localhost/api/products/v2";
+  const updatedV2 = await store.upsertRequestById(renamedRequest, buildResponse(202, "{\"v\":2}", 32));
+  assert.equal(updatedV2.id, request.id);
+  const afterV2 = await store.loadConfig();
+  assert.equal(afterV2.collections[0].requests[0].url, "http://localhost/api/products/v2");
+  assert.equal(afterV2.collections[0].requests[0].lastStatus, 202);
 
   await logger.step("重写 store 实例后, lastResponseSnapshot 应从磁盘恢复");
   const nextStore = new HttpClientStore(workspaceRoot, stateStore);
   const snapshot = await nextStore.loadSnapshot();
   const lookup = nextStore.findRequestById(updated.id);
   assert.ok(lookup);
-  assert.equal(lookup.request.lastStatus, 201);
-  assert.equal(lookup.request.lastResponseSnapshot?.bodyRawText, "{\"ok\":true}");
+  assert.equal(lookup.request.lastStatus, 202);
+  assert.equal(lookup.request.lastResponseSnapshot?.bodyRawText, "{\"v\":2}");
 
   await logger.step("默认集合不可重命名或删除");
   await assert.rejects(() => nextStore.renameCollection(HTTP_CLIENT_DEFAULT_COLLECTION_ID, "新名字"));
   await assert.rejects(() => nextStore.deleteCollection(HTTP_CLIENT_DEFAULT_COLLECTION_ID));
 
   await logger.conclusion("store 已满足嵌套集合, 快照自动 upsert 和默认集合保护要求");
+});
+
+test("store: moveRequest 支持同集合按 beforeId 重排, ULID 中点算法", async () => {
+  const logger = await createTestLogger("http_client_store_reorder.txt");
+  await logger.flow("验证同集合内按 beforeId 重排顺序, sortId 用 ULID 中点算法");
+
+  const workspaceRoot = await createTempWorkspace("mx-http-store-reorder");
+  const stateStore = new MemoryStateStore();
+  const store = new HttpClientStore(workspaceRoot, stateStore);
+
+  const savedA = await store.saveRequest(createDefaultRequest("A"));
+  const savedB = await store.saveRequest(createDefaultRequest("B"));
+  const savedC = await store.saveRequest(createDefaultRequest("C"));
+
+  const initial = await store.loadConfig();
+  const defaultCollection = initial.collections[0];
+  assert.equal(defaultCollection.requests.length, 3);
+  // saveRequest 内部用 unshift, 所以保存顺序为 [C, B, A] (后保存的在前面)
+  const initialOrder = defaultCollection.requests.map((r) => r.id);
+  assert.deepEqual(initialOrder, [savedC.id, savedB.id, savedA.id]);
+
+  await logger.step("把 A 移到 B 之前 (beforeId = B) → [C, A, B] (A 进 B 当前 index 1)");
+  await store.moveRequest(savedA.id, savedB.id, defaultCollection.id);
+  const afterMoveAB = await store.loadConfig();
+  assert.deepEqual(
+    afterMoveAB.collections[0].requests.map((r) => r.id),
+    [savedC.id, savedA.id, savedB.id]
+  );
+
+  await logger.step("把 A 移到 C 之前 (beforeId = C) → [A, C, B] (A 进 C 当前 index 0)");
+  await store.moveRequest(savedA.id, savedC.id, defaultCollection.id);
+  const afterMoveAC = await store.loadConfig();
+  assert.deepEqual(
+    afterMoveAC.collections[0].requests.map((r) => r.id),
+    [savedA.id, savedC.id, savedB.id]
+  );
+
+  await logger.step("把 A 移到 A 之前 (beforeId = A) → no-op (紧邻 no-op)");
+  await store.moveRequest(savedA.id, savedA.id, defaultCollection.id);
+  const afterNoop = await store.loadConfig();
+  assert.deepEqual(
+    afterNoop.collections[0].requests.map((r) => r.id),
+    [savedA.id, savedC.id, savedB.id]
+  );
+
+  await logger.step("把 C 移到 A 之前 (beforeId = A) → [C, A, B] (C 进 A 当前 index 0)");
+  await store.moveRequest(savedC.id, savedA.id, defaultCollection.id);
+  const afterMoveCA = await store.loadConfig();
+  const order = afterMoveCA.collections[0].requests.map((r) => r.id);
+  assert.deepEqual(order, [savedC.id, savedA.id, savedB.id]);
+
+  await logger.step("移动后 sortId 字典序与新位置一致");
+  const sortIds = afterMoveCA.collections[0].requests.map((r) => r.sortId);
+  assert.ok(sortIds[0] < sortIds[1] && sortIds[1] < sortIds[2], `sortId 顺序应为升序: ${sortIds.join(", ")}`);
+
+  await logger.conclusion("moveRequest 同集合重排按 ULID 中点算法正确生成 sortId, 顺序与位置一致");
+});
+
+test("store: moveRequest 跨集合按 beforeId 插入到目标集合指定位置", async () => {
+  const logger = await createTestLogger("http_client_store_move_before.txt");
+  await logger.flow("验证跨集合 moveRequest 时, beforeId 决定目标集合插入位置");
+
+  const workspaceRoot = await createTempWorkspace("mx-http-store-move-before");
+  const stateStore = new MemoryStateStore();
+  const store = new HttpClientStore(workspaceRoot, stateStore);
+
+  const target = await store.createCollection("目标集合");
+  const x1 = await store.saveRequest({ ...createDefaultRequest("X1"), id: "x1" }, { collectionId: target.id });
+  const x2 = await store.saveRequest({ ...createDefaultRequest("X2"), id: "x2" }, { collectionId: target.id });
+  const x3 = await store.saveRequest({ ...createDefaultRequest("X3"), id: "x3" }, { collectionId: target.id });
+  // 把 X1, X2, X3 都搬进 target
+  await store.moveRequest(x1.id, null, target.id);
+  await store.moveRequest(x2.id, null, target.id);
+  await store.moveRequest(x3.id, null, target.id);
+
+  // 源 default 集合里建 A
+  const a = await store.saveRequest(createDefaultRequest("A"));
+
+  await logger.step("把 A 插入到 X1 之前 (target 头部)");
+  await store.moveRequest(a.id, x1.id, target.id);
+  const afterAFirst = await store.loadConfig();
+  const targetAfterAFirst = afterAFirst.collections.find((c) => c.id === target.id);
+  assert.equal(targetAfterAFirst?.requests[0].id, a.id);
+
+  await logger.step("把 A 插入到 X3 之后 (target 末尾, beforeId = null)");
+  await store.moveRequest(a.id, null, target.id);
+  const afterAEnd = await store.loadConfig();
+  const targetAfterAEnd = afterAEnd.collections.find((c) => c.id === target.id);
+  const ids = targetAfterAEnd?.requests.map((r) => r.id) ?? [];
+  assert.equal(ids[ids.length - 1], a.id, "A 应在 target 末尾");
+
+  await logger.step("把 A 插入到 X2 之前 (target 中间)");
+  await store.moveRequest(a.id, x2.id, target.id);
+  const afterAMid = await store.loadConfig();
+  const targetAfterAMid = afterAMid.collections.find((c) => c.id === target.id);
+  const finalIds = targetAfterAMid?.requests.map((r) => r.id) ?? [];
+  const aIndex = finalIds.indexOf(a.id);
+  const x2Index = finalIds.indexOf(x2.id);
+  assert.ok(aIndex < x2Index, `A (index ${aIndex}) 应在 X2 (index ${x2Index}) 之前`);
+
+  await logger.conclusion("跨集合 moveRequest 接受 beforeId, 精确插入到目标位置");
 });
 
 test("store: 集合的请求可移动并保留历史快照", async () => {
@@ -83,11 +194,11 @@ test("store: 集合的请求可移动并保留历史快照", async () => {
 
   const config = await store.ensureInitialized();
   const savedA = await store.saveRequest(createDefaultRequest("A"));
-  await store.upsertRequestByUrl(savedA, buildResponse(200, "{\"a\":1}", 64));
+  await store.upsertRequestById(savedA, buildResponse(200, "{\"a\":1}", 64));
   const products = await store.createCollection("产品 API");
 
   await logger.step("moveRequest 把默认集合的请求搬到目标集合, 快照保留");
-  await store.moveRequest(savedA.id, products.id);
+  await store.moveRequest(savedA.id, null, products.id);
   const next = await store.loadConfig();
   const defaultCollection = next.collections.find((c) => c.isDefault);
   const productsCollection = next.collections.find((c) => c.id === products.id);

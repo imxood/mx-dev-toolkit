@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ulid } from "ulid";
 import type {
   ExtensionToWebviewMessage,
   HttpClientViewState,
@@ -67,7 +68,7 @@ export interface WorkbenchController {
   duplicateRequest(requestId: string): void;
   deleteRequest(requestId: string): void;
   exportCurl(requestId: string): void;
-  moveRequest(requestId: string, targetCollectionId: string): void;
+  moveRequest(requestId: string, beforeRequestId: string | null, targetCollectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -481,11 +482,11 @@ export function useWorkbenchController(): WorkbenchController {
   );
 
   const moveRequest = useCallback(
-    (requestId: string, targetCollectionId: string) => {
-      updateViewState((current) => moveRequestLocally(current, requestId, targetCollectionId));
+    (requestId: string, beforeRequestId: string | null, targetCollectionId: string) => {
+      updateViewState((current) => moveRequestLocally(current, requestId, beforeRequestId, targetCollectionId));
       postMessage({
         type: "httpClient/moveRequest",
-        payload: { requestId, targetCollectionId },
+        payload: { requestId, beforeRequestId, targetCollectionId },
       });
     },
     [postMessage, updateViewState]
@@ -838,7 +839,8 @@ export function useWorkbenchController(): WorkbenchController {
 
   // 把 moveRequest / selectRequest 暴露到 window, 让 SidebarView 内部使用
   useEffect(() => {
-    window.__mxSidebarMoveRequest = (requestId, targetCollectionId) => moveRequest(requestId, targetCollectionId);
+    window.__mxSidebarMoveRequest = (requestId, beforeRequestId, targetCollectionId) =>
+      moveRequest(requestId, beforeRequestId, targetCollectionId);
     window.__mxSidebarSelectRequest = (requestId) => selectRequest(requestId);
     return () => {
       delete window.__mxSidebarMoveRequest;
@@ -1153,10 +1155,15 @@ function createId(): string {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function createSortId(): string {
+  return ulid();
+}
+
 function createWorkbenchScratchRequest(): HttpRequestEntity {
   const now = new Date().toISOString();
   return {
     id: createId(),
+    sortId: createSortId(),
     name: "新请求",
     method: "GET",
     url: "",

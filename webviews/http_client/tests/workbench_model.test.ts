@@ -186,7 +186,7 @@ test("workbench_model: local-first session patch 与快照自动加载", async (
     currentViewState.config.collections[0],
     { ...target, requests: [] },
   ];
-  const moved = moveRequestLocally(currentViewState, requestA.id, target.id);
+  const moved = moveRequestLocally(currentViewState, requestA.id, null, target.id);
   const defaultCollection = moved.config.collections.find((c) => c.isDefault);
   const targetCollection = moved.config.collections.find((c) => c.id === target.id);
   assert.equal(defaultCollection?.requests.length, 1);
@@ -194,6 +194,35 @@ test("workbench_model: local-first session patch 与快照自动加载", async (
   assert.equal(targetCollection?.requests[0].id, requestA.id);
 
   await logger.conclusion("local-first 纯函数已能正确处理快照自动加载与跨集合搬运");
+});
+
+test("workbench_model: moveRequestLocally 同集合按 beforeId 重排, sortId 用 ULID 中点", async () => {
+  const logger = await createTestLogger("http_client_workbench_model_reorder.txt");
+  await logger.flow("验证 webview 端 moveRequestLocally 同集合重排, sortId 字典序与新位置一致");
+
+  const currentViewState = createFallbackViewState();
+  currentViewState.config = createDefaultConfigFile();
+  const requestA = createDefaultRequest("A");
+  const requestB = createDefaultRequest("B");
+  const requestC = createDefaultRequest("C");
+  // 固定 sortId 升序, 避免 ulid() 随机性影响 midpoint 测试
+  requestA.sortId = "01AAAAAAAAAAAAAAAAAAAAAAAA";
+  requestB.sortId = "01BBBBBBBBBBBBBBBBBBBBBBBB";
+  requestC.sortId = "01CCCCCCCCCCCCCCCCCCCCCCCC";
+  currentViewState.config.collections[0].requests = [requestA, requestB, requestC];
+
+  await logger.step("同集合原位 (beforeId = requestA) 不应改变顺序");
+  const noop = moveRequestLocally(currentViewState, requestA.id, requestA.id, currentViewState.config.collections[0].id);
+  assert.equal(noop, currentViewState, "原位操作应返回同一对象引用");
+
+  await logger.step("把 A 移到 C 之前 (beforeId = C) → [B, A, C]");
+  const moved = moveRequestLocally(currentViewState, requestA.id, requestC.id, currentViewState.config.collections[0].id);
+  const ids = moved.config.collections[0].requests.map((r) => r.id);
+  assert.deepEqual(ids, [requestB.id, requestA.id, requestC.id]);
+  const sortIds = moved.config.collections[0].requests.map((r) => r.sortId);
+  assert.ok(sortIds[0] < sortIds[1] && sortIds[1] < sortIds[2], `sortId 应升序: ${sortIds.join(", ")}`);
+
+  await logger.conclusion("webview 端 moveRequestLocally 同集合重排 ULID 中点正确");
 });
 
 function createResponseResult(): HttpResponseResult {

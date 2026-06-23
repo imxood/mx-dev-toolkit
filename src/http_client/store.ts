@@ -2,7 +2,6 @@ import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import * as path from "path";
 import {
-  buildRequestUrlKey,
   createDefaultCollection,
   createDefaultConfigFile,
   createDefaultEnvironment,
@@ -25,6 +24,7 @@ import {
   isHttpMethod,
   sanitizeRequestEntity,
 } from "./types";
+import { newSortId, betweenSortIds } from "./sort_id";
 
 const KEY_ACTIVE_REQUEST_ID = "httpClient.activeRequestId";
 const KEY_ACTIVE_ENVIRONMENT_ID = "httpClient.activeEnvironmentId";
@@ -33,6 +33,21 @@ const KEY_SCRATCH_DRAFT = "httpClient.scratchDraft";
 
 function getDraftKey(requestId: string): string {
   return `httpClient.draft.${requestId}`;
+}
+
+/** 返回 collection 中字典序最小的 sortId; 集合为空时返回 null. */
+function minSortId(collection: HttpCollectionEntity): string | null {
+  if (collection.requests.length === 0) {
+    return null;
+  }
+  let min = collection.requests[0].sortId;
+  for (let index = 1; index < collection.requests.length; index += 1) {
+    const candidate = collection.requests[index].sortId;
+    if (candidate < min) {
+      min = candidate;
+    }
+  }
+  return min;
 }
 
 export interface HttpClientStoreRequestLookup {
@@ -233,21 +248,6 @@ export class HttpClientStore {
     return item.name === HTTP_CLIENT_DEFAULT_COLLECTION_NAME;
   }
 
-  public findRequestByUrl(method: string, url: string): HttpClientStoreRequestLookup | null {
-    const config = this.configCache;
-    if (!config) {
-      return null;
-    }
-    const key = buildRequestUrlKey(method, url);
-    for (const collection of config.collections) {
-      const request = collection.requests.find((item) => buildRequestUrlKey(item.method, item.url) === key);
-      if (request) {
-        return { request, collection };
-      }
-    }
-    return null;
-  }
-
   public findRequestById(requestId: string): HttpClientStoreRequestLookup | null {
     const config = this.configCache;
     if (!config) {
@@ -280,7 +280,10 @@ export class HttpClientStore {
         item.id === normalized.id ? { ...normalized, createdAt: lookup.request.createdAt } : item
       );
     } else {
-      targetCollection.requests.unshift({ ...normalized, createdAt: normalized.createdAt });
+      // 新建时强制 sortId < 已有最小, 保持数组 sortId 严格升序 (头部最小, 尾部最大)
+      const currentMinSortId = minSortId(targetCollection);
+      const finalSortId = betweenSortIds(null, currentMinSortId, new Set(targetCollection.requests.map((item) => item.sortId)));
+      targetCollection.requests.unshift({ ...normalized, sortId: finalSortId, createdAt: normalized.createdAt });
     }
 
     await this.writeConfig(config);
@@ -289,13 +292,13 @@ export class HttpClientStore {
     return normalized;
   }
 
-  public async upsertRequestByUrl(
+  public async upsertRequestById(
     request: HttpRequestEntity,
     snapshot: HttpResponseResult,
     fallbackCollectionId: string | null = null
   ): Promise<HttpRequestEntity> {
     const config = await this.ensureInitialized();
-    const lookup = this.findRequestByUrl(request.method, request.url);
+    const lookup = this.findRequestById(request.id);
     const targetCollection = lookup?.collection ?? this.resolveTargetCollection(config, fallbackCollectionId);
     const clipped = clipResponseForSnapshot(snapshot);
     const now = createNowIsoString();
@@ -317,7 +320,10 @@ export class HttpClientStore {
         item.id === nextRequest.id ? { ...nextRequest, createdAt: lookup.request.createdAt } : item
       );
     } else {
-      targetCollection.requests.unshift({ ...nextRequest, createdAt: nextRequest.createdAt });
+      // 新建时强制 sortId < 已有最小, 保持数组 sortId 严格升序
+      const currentMinSortId = minSortId(targetCollection);
+      const finalSortId = betweenSortIds(null, currentMinSortId, new Set(targetCollection.requests.map((item) => item.sortId)));
+      targetCollection.requests.unshift({ ...nextRequest, sortId: finalSortId, createdAt: nextRequest.createdAt });
     }
 
     await this.writeConfig(config);
@@ -373,26 +379,67 @@ export class HttpClientStore {
       createdAt: now,
       updatedAt: now,
     });
-    target.requests.unshift({ ...duplicate, createdAt: now });
+    const currentMinSortId = minSortId(target);
+    const finalSortId = betweenSortIds(null, currentMinSortId, new Set(target.requests.map((item) => item.sortId)));
+    target.requests.unshift({ ...duplicate, sortId: finalSortId, createdAt: now });
     await this.writeConfig(config);
     await this.setActiveRequestId(duplicate.id);
     return duplicate;
   }
 
-  public async moveRequest(requestId: string, targetCollectionId: string): Promise<HttpRequestEntity> {
+  public async moveRequest(
+    requestId: string,
+    beforeRequestId: string | null,
+    targetCollectionId: string
+  ): Promise<HttpRequestEntity> {
     const config = await this.ensureInitialized();
     const lookup = this.findRequestById(requestId);
     if (!lookup) {
       throw new Error("请求不存在");
     }
     const target = this.resolveTargetCollection(config, targetCollectionId);
+
+    // 同集合原位检测: filter 之后再算 insertIndex,跟 currentIndex 比
     if (target.id === lookup.collection.id) {
-      return lookup.request;
+      if (beforeRequestId === requestId) {
+        return lookup.request;
+      }
+      const currentIndex = lookup.collection.requests.findIndex((item) => item.id === requestId);
+      const filtered = lookup.collection.requests.filter((item) => item.id !== requestId);
+      const insertIndex = beforeRequestId
+        ? filtered.findIndex((item) => item.id === beforeRequestId)
+        : filtered.length;
+      const safeInsertIndex = insertIndex < 0 ? filtered.length : insertIndex;
+      if (safeInsertIndex === currentIndex) {
+        return lookup.request;
+      }
     }
-    target.requests.unshift({ ...lookup.request, updatedAt: createNowIsoString() });
-    lookup.collection.requests = lookup.collection.requests.filter((item) => item.id !== requestId);
+
+    // 跨集合: 先从源集合删除
+    if (target.id !== lookup.collection.id) {
+      lookup.collection.requests = lookup.collection.requests.filter((item) => item.id !== requestId);
+    }
+
+    // filter 之后算 safeIndex (filter 改变了 beforeRequestId 的位置, 且跨集合时 A 已在源里删了)
+    // 注意: filtered 是新数组, 但 target.requests 跟原数组是同一引用, 必须先替换
+    target.requests = target.requests.filter((item) => item.id !== requestId);
+    const insertIndex = beforeRequestId
+      ? target.requests.findIndex((item) => item.id === beforeRequestId)
+      : target.requests.length;
+    const safeIndex = insertIndex < 0 ? target.requests.length : insertIndex;
+
+    const prevSortId = safeIndex > 0 ? target.requests[safeIndex - 1].sortId : null;
+    const nextSortId = safeIndex < target.requests.length ? target.requests[safeIndex].sortId : null;
+    const newSortId = betweenSortIds(prevSortId, nextSortId, new Set(target.requests.map((item) => item.sortId)));
+    const moving: HttpRequestEntity = {
+      ...lookup.request,
+      sortId: newSortId,
+      updatedAt: createNowIsoString(),
+    };
+
+    target.requests.splice(safeIndex, 0, moving);
     await this.writeConfig(config);
-    return lookup.request;
+    return moving;
   }
 
   public async createScratchRequest(
@@ -600,10 +647,11 @@ function ensureDefaultCollectionInList(collections: HttpCollectionEntity[]): Htt
   return next;
 }
 
-function normalizeRequest(input: HttpRequestEntity): HttpRequestEntity {
+function normalizeRequest(input: Partial<HttpRequestEntity>): HttpRequestEntity {
   const now = createNowIsoString();
   return {
     id: typeof input.id === "string" && input.id ? input.id : randomUuid(),
+    sortId: typeof input.sortId === "string" && input.sortId.length === 26 ? input.sortId : newSortId(),
     name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : "未命名请求",
     method: isHttpMethod(input.method) ? input.method : "GET",
     url: typeof input.url === "string" ? input.url : "",
