@@ -784,7 +784,12 @@ function renderActivityPanel(
       </div>
       <div className="list-body" onContextMenu={onActivityContextMenu}>
         {visibleHistoryRecords.length === 0
-          ? renderEmptyState(viewState?.history.length === 0 ? "暂无历史记录" : "没有匹配的历史记录", viewState?.history.length === 0, controller)
+          ? renderEmptyState(
+              viewState?.history.length === 0 ? "暂无历史记录" : "没有匹配的历史记录",
+              viewState?.history.length === 0,
+              controller,
+              { showActions: false }
+            )
           : (
               <div className="compact-request-list">
                 {visibleHistoryRecords.map(({ record, active }) => (
@@ -853,21 +858,28 @@ function renderRequestRow(
   );
 }
 
-function renderEmptyState(title: string, allowCreateCollection: boolean, controller: SidebarViewController): React.ReactElement {
+function renderEmptyState(
+  title: string,
+  allowCreateCollection: boolean,
+  controller: SidebarViewController,
+  options: { showActions?: boolean } = {}
+): React.ReactElement {
   return (
     <div className="empty-state">
       <div className="empty-title">{title}</div>
-      <div>点击上方按钮创建请求. 其它操作可通过右键菜单完成.</div>
-      <div className="empty-actions">
-        <button className="primary-button inline-primary" type="button" onClick={() => controller.createRequest()}>
-          新建 HTTP 连接
-        </button>
-        {allowCreateCollection ? (
-          <button className="ghost-button" type="button" onClick={controller.createCollection}>
-            新建集合
+      <div>{options.showActions === false ? "可通过右键菜单完成相关操作." : "点击上方按钮创建请求. 其它操作可通过右键菜单完成."}</div>
+      {options.showActions === false ? null : (
+        <div className="empty-actions">
+          <button className="primary-button inline-primary" type="button" onClick={() => controller.createRequest()}>
+            新建 HTTP 连接
           </button>
-        ) : null}
-      </div>
+          {allowCreateCollection ? (
+            <button className="ghost-button" type="button" onClick={controller.createCollection}>
+              新建集合
+            </button>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
