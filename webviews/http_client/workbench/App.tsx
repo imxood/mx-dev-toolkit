@@ -363,22 +363,11 @@ function renderResponseTab(controller: WorkbenchController, elapsedMs: number): 
 
   if (!response) {
     if (viewState.requestRunning) {
+      // 进度反馈统一在顶部 summary pill (spinner + 计时器 + 取消按钮), 中部只显示极简提示
       return (
-        <div className="progress-panel" role="status" aria-live="polite">
-          <div className="spinner" aria-hidden="true">
-            <span className="spinner-ring" />
-          </div>
-          <div className="progress-label">正在发送请求…</div>
-          <div className="progress-timer" aria-label="已耗时">
-            {formatElapsedLong(elapsedMs)}
-          </div>
-          <button
-            type="button"
-            className="ghost-button cancel-progress-button"
-            onClick={() => controller.cancelRequest()}
-          >
-            取消请求
-          </button>
+        <div className="empty-state quiet" role="status" aria-live="polite">
+          <span className="spinner-dot inline" aria-hidden="true" />
+          <span>等待响应中, 顶部可取消</span>
         </div>
       );
     }
