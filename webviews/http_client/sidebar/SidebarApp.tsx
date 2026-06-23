@@ -648,7 +648,7 @@ function CollectionSection({
             <span className="group-count">{group.requests.length}</span>
           </div>
           <span className="group-title-toggle" aria-hidden="true">
-            {group.expanded ? "收起" : "展开"}
+            {group.expanded ? "▾" : "▸"}
           </span>
         </button>
       </div>

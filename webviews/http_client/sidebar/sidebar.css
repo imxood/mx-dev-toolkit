@@ -305,26 +305,15 @@ body {
 .group-title-toggle {
   flex: 0 0 auto;
   color: var(--soft);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
+  border-radius: 3px;
   transition: background-color 120ms ease, color 120ms ease;
-}
-
-.group-title-toggle::before {
-  content: "▾";
-  display: block;
-  transform: rotate(0deg);
-  transition: transform 120ms ease;
-}
-
-.group-title-button.collapsed .group-title-toggle::before {
-  transform: rotate(-90deg);
 }
 
 .group-title-button:hover .group-title-toggle {
