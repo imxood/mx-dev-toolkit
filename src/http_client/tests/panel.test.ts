@@ -470,6 +470,8 @@ test("panel: 选择历史消息只更新 Host 会话态, 不再构建整包 view
       ok: true,
       sizeBytes: 64,
     },
+    response: null,
+    responseTruncated: false,
   };
 
   const messages: ExtensionToWebviewMessage[] = [];
@@ -883,6 +885,87 @@ test("panel: 编辑响应内容应在 VS Code 中打开一个新建文档", asyn
   setMockShowTextDocument(async () => undefined);
 
   await logger.conclusion("编辑响应会在当前工作台所在标签组中打开 VS Code 临时文档, 不再分离到旁侧标签组");
+});
+
+test("panel: 选择历史时应把持久化响应恢复到当前工作台", async () => {
+  const logger = await createTestLogger("http_client_panel.txt");
+  await logger.flow("验证 selectHistory 会把 history 中保存的响应正文恢复到当前会话, 实现下次启动仍能查看上次结果");
+
+  const HttpClientPanelController = loadPanelController();
+  const config = createDefaultConfigFile();
+  const request = createDefaultRequest("历史请求", config.collections[0].id);
+  request.method = "POST";
+  request.url = "https://api.example.com/member/info";
+  const cachedResponse: HttpResponseResult = {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    bodyRawText: "{\"ok\":true,\"id\":\"demo\"}",
+    bodyText: "{\"ok\":true,\"id\":\"demo\"}",
+    bodyPrettyText: "{\n  \"ok\": true,\n  \"id\": \"demo\"\n}",
+    isJson: true,
+    headers: [{ key: "content-type", value: "application/json" }],
+    meta: {
+      startedAt: new Date().toISOString(),
+      durationMs: 22,
+      sizeBytes: 22,
+      finalUrl: request.url,
+      redirected: false,
+      contentType: "application/json",
+      unresolvedVariables: [],
+      environmentId: null,
+    },
+  };
+  const history: HttpHistoryRecord = {
+    id: "history-cached",
+    request,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: cachedResponse.status,
+      statusText: cachedResponse.statusText,
+      durationMs: cachedResponse.meta.durationMs,
+      ok: cachedResponse.ok,
+      sizeBytes: cachedResponse.meta.sizeBytes,
+    },
+    response: cachedResponse,
+    responseTruncated: false,
+  };
+
+  const controller = new HttpClientPanelController(
+    { subscriptions: [] } as never,
+    { appendLine: () => undefined } as never,
+    {
+      ensureInitialized: async () => config,
+      loadSnapshot: async () => ({
+        config,
+        history: [history],
+        activeRequestId: null,
+        activeEnvironmentId: null,
+      }),
+      getActiveRequestId: () => null,
+      getHistoryItem: (historyId: string) => (historyId === history.id ? history : null),
+      getLastLoadProfile: <T>(defaultValue: T) => defaultValue,
+      recordHistory: async () => undefined,
+    } as never,
+    createToastServiceStub() as never
+  );
+
+  await logger.step("触发 selectHistory 后, currentResponse 应填充 history.response");
+  await (
+    controller as unknown as {
+      selectHistoryItem: (historyId: string, options?: { postState?: boolean; buildViewState?: boolean }) => Promise<unknown>;
+    }
+  ).selectHistoryItem(history.id, { postState: false, buildViewState: false });
+
+  const recovered = (controller as unknown as { currentResponse: HttpResponseResult | null }).currentResponse;
+  await logger.verify(`恢复响应 status: ${recovered?.status ?? "<none>"}, pretty 长度: ${recovered?.bodyPrettyText.length ?? 0}`);
+  assert.ok(recovered);
+  assert.equal(recovered?.status, 200);
+  assert.equal(recovered?.bodyPrettyText, cachedResponse.bodyPrettyText);
+  assert.equal(recovered?.bodyRawText, cachedResponse.bodyRawText);
+
+  await logger.conclusion("selectHistory 已从 history.response 恢复完整响应, 下次启动可直接查看上次结果");
 });
 
 function loadPanelController(): typeof import("../panel").HttpClientPanelController {

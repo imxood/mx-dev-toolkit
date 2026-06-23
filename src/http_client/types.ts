@@ -4,6 +4,7 @@ import { ToastNotifyMessage, ToastToWebviewMessage } from "../toast/types";
 export const HTTP_CLIENT_CONFIG_VERSION = 1;
 export const HTTP_CLIENT_CONFIG_FILE = "mx_http_client.json";
 export const HTTP_CLIENT_HISTORY_LIMIT = 50;
+export const HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES = 256 * 1024;
 export const HTTP_CLIENT_LOAD_TEST_ERROR_SAMPLE_LIMIT = 20;
 export const HTTP_CLIENT_LOAD_TEST_MAX_CONCURRENCY = 50;
 export const HTTP_CLIENT_LOAD_TEST_MAX_REQUESTS = 10000;
@@ -74,6 +75,8 @@ export interface HttpHistoryRecord {
   id: string;
   request: HttpRequestEntity;
   responseSummary: HttpResponseSummary;
+  response?: HttpResponseResult | null;
+  responseTruncated?: boolean;
   environmentId: string | null;
   executedAt: string;
 }
@@ -374,6 +377,18 @@ export function normalizeBodyMode(method: HttpMethod, bodyMode: HttpBodyMode): H
 
 export function createEmptyHistory(): HttpHistoryRecord[] {
   return [];
+}
+
+export function buildHistoryResponseKey(method: HttpMethod | string, url: string): string {
+  return `${String(method || "").toUpperCase()}|${(url || "").trim()}`;
+}
+
+export function normalizeHistoryRecord(record: HttpHistoryRecord): HttpHistoryRecord {
+  return {
+    ...record,
+    response: record.response ?? null,
+    responseTruncated: Boolean(record.responseTruncated),
+  };
 }
 
 export function sanitizeRequestEntity(input: HttpRequestEntity): HttpRequestEntity {

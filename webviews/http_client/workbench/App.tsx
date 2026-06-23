@@ -421,8 +421,11 @@ function renderResponseTab(controller: WorkbenchController): React.ReactElement 
         <button id="response-open-editor" className="ghost-button" type="button" onClick={controller.openResponseEditor}>
           编辑
         </button>
+        <button id="response-format-json" className="ghost-button" type="button" onClick={() => controller.formatResponseJson()}>
+          格式化 JSON
+        </button>
         <button id="response-toggle-mode" className="ghost-button" type="button" onClick={controller.toggleResponsePretty}>
-          {uiState.responsePretty ? "切换 Raw" : "切换 原文"}
+          {uiState.responsePretty ? "查看原文" : "查看格式化"}
         </button>
         </div>
         <div className="response-code-shell">

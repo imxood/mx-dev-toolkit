@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { HttpClientStore } from "../store";
-import { createDefaultRequest } from "../types";
+import {
+  createDefaultRequest,
+  HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES,
+  HttpResponseResult,
+} from "../types";
 import { createTempWorkspace, createTestLogger, MemoryStateStore } from "./helpers";
 
 test("store: 配置初始化, 保存请求与历史状态可恢复", async () => {
@@ -153,11 +157,189 @@ test("store: createScratchRequest 支持沿用前端本地草稿 ID", async () =
   await logger.conclusion("store 已支持沿用前端本地草稿 ID, 避免 Host 重新生成 request id");
 });
 
+test("store: recordHistory 按 method+url 去重, 复用历史 ID 并保留最新响应", async () => {
+  const logger = await createTestLogger("http_client_store.txt");
+  await logger.flow("验证同一 method+url 的多次执行只保留一条历史, ID 保持稳定, 响应正文被持久化");
+
+  const workspaceRoot = await createTempWorkspace("mx-http-store-history-dedupe");
+  const stateStore = new MemoryStateStore();
+  const store = new HttpClientStore(workspaceRoot, stateStore);
+  const config = await store.ensureInitialized();
+
+  const savedRequest = await store.saveRequest({
+    ...createDefaultRequest("会员查询", config.collections[0].id),
+    method: "POST",
+    url: "https://api.example.com/member/info",
+    bodyMode: "json",
+    bodyText: "{\"memberId\":\"demo\"}",
+  });
+
+  const responseFirst = createJsonResponse({
+    body: "{\"ok\":true,\"value\":1}",
+    status: 200,
+  });
+  const responseSecond = createJsonResponse({
+    body: "{\"ok\":true,\"value\":2}",
+    status: 200,
+  });
+
+  await logger.step("首次记录 POST /member/info 的执行结果");
+  await store.recordHistory({
+    id: "history-a",
+    request: savedRequest,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: responseFirst.status,
+      statusText: responseFirst.statusText,
+      durationMs: responseFirst.meta.durationMs,
+      ok: responseFirst.ok,
+      sizeBytes: responseFirst.meta.sizeBytes,
+    },
+    response: responseFirst,
+  });
+
+  await logger.step("再次执行同一 URL, 应替换原历史条目而不是新增");
+  await store.recordHistory({
+    id: "history-b",
+    request: savedRequest,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: responseSecond.status,
+      statusText: responseSecond.statusText,
+      durationMs: responseSecond.meta.durationMs,
+      ok: responseSecond.ok,
+      sizeBytes: responseSecond.meta.sizeBytes,
+    },
+    response: responseSecond,
+  });
+
+  const history = store.getHistory();
+  await logger.verify(`历史条目数: ${history.length}, history id: ${history[0]?.id ?? "<none>"}`);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, "history-a");
+  assert.equal(history[0].response?.bodyPrettyText, responseSecond.bodyPrettyText);
+  assert.equal(history[0].responseSummary.status, 200);
+
+  await logger.step("执行不同 URL 的请求, 应作为独立的历史条目并存");
+  const otherRequest = await store.saveRequest({
+    ...createDefaultRequest("设备查询", config.collections[0].id),
+    url: "https://api.example.com/device/info",
+  });
+  await store.recordHistory({
+    id: "history-c",
+    request: otherRequest,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: 200,
+      statusText: "OK",
+      durationMs: 12,
+      ok: true,
+      sizeBytes: 24,
+    },
+    response: createJsonResponse({ body: "{\"device\":1}", status: 200 }),
+  });
+
+  const allHistory = store.getHistory();
+  await logger.verify(`混合后历史条目数: ${allHistory.length}`);
+  assert.equal(allHistory.length, 2);
+  assert.deepEqual(
+    allHistory.map((item) => `${item.request.method} ${item.request.url}`),
+    ["GET https://api.example.com/device/info", "POST https://api.example.com/member/info"]
+  );
+
+  await logger.step("新 store 实例读取快照, 验证响应持久化可跨会话恢复");
+  const restoredStore = new HttpClientStore(workspaceRoot, stateStore);
+  const restoredHistory = restoredStore.getHistory();
+  const restoredMember = restoredHistory.find((item) => item.request.url === savedRequest.url);
+  assert.ok(restoredMember);
+  assert.equal(restoredMember.response?.bodyPrettyText, responseSecond.bodyPrettyText);
+
+  await logger.conclusion("recordHistory 已按 method+url 去重并保留最新响应快照");
+});
+
+test("store: recordHistory 对超大响应体保留原始大小但记录仍可读", async () => {
+  const logger = await createTestLogger("http_client_store.txt");
+  await logger.flow("验证 store 不擅自截断响应正文, 截断策略由 panel 写入前完成, store 仅负责按 key 去重");
+
+  const workspaceRoot = await createTempWorkspace("mx-http-store-history-large");
+  const stateStore = new MemoryStateStore();
+  const store = new HttpClientStore(workspaceRoot, stateStore);
+  const config = await store.ensureInitialized();
+
+  const request = await store.saveRequest({
+    ...createDefaultRequest("大数据响应", config.collections[0].id),
+    url: "https://api.example.com/big",
+  });
+
+  const oversizeBody = "x".repeat(HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES + 1024);
+  const response = createJsonResponse({ body: oversizeBody, status: 200, sizeBytes: oversizeBody.length });
+
+  await logger.step("写入超过阈值的大响应, store 应完整保留由 panel 预截断后的内容");
+  await store.recordHistory({
+    id: "history-big",
+    request,
+    environmentId: null,
+    executedAt: new Date().toISOString(),
+    responseSummary: {
+      status: response.status,
+      statusText: response.statusText,
+      durationMs: response.meta.durationMs,
+      ok: response.ok,
+      sizeBytes: response.meta.sizeBytes,
+    },
+    response,
+    responseTruncated: false,
+  });
+
+  const history = store.getHistory();
+  const recorded = history[0];
+  await logger.verify(`响应正文长度: ${recorded.response?.bodyRawText.length ?? 0}, truncated 标记: ${recorded.responseTruncated}`);
+  assert.ok(recorded.response);
+  assert.equal(recorded.responseSummary.sizeBytes, oversizeBody.length);
+
+  await logger.conclusion("store 已按 key 去重并保留由 panel 处理的响应快照");
+});
+
 async function fileExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
     return true;
   } catch {
     return false;
+  }
+}
+
+function createJsonResponse(input: { body: string; status: number; sizeBytes?: number }): HttpResponseResult {
+  const rawBytes = Buffer.byteLength(input.body, "utf8");
+  return {
+    ok: input.status >= 200 && input.status < 300,
+    status: input.status,
+    statusText: "OK",
+    bodyRawText: input.body,
+    bodyText: input.body,
+    bodyPrettyText: tryFormatJson(input.body) ?? input.body,
+    isJson: tryFormatJson(input.body) !== null,
+    headers: [{ key: "content-type", value: "application/json" }],
+    meta: {
+      startedAt: new Date().toISOString(),
+      durationMs: 18,
+      sizeBytes: input.sizeBytes ?? rawBytes,
+      finalUrl: "https://api.example.com",
+      redirected: false,
+      contentType: "application/json",
+      unresolvedVariables: [],
+      environmentId: null,
+    },
+  };
+}
+
+function tryFormatJson(input: string): string | null {
+  try {
+    return JSON.stringify(JSON.parse(input), null, 2);
+  } catch {
+    return null;
   }
 }

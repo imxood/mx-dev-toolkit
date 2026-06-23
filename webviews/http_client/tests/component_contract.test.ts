@@ -286,6 +286,7 @@ function createWorkbenchController(): WorkbenchController {
     setBodyMode: () => undefined,
     setBodyText: () => undefined,
     formatJsonBody: () => true,
+    formatResponseJson: () => true,
     setResponseSearch: () => undefined,
     toggleResponsePretty: () => undefined,
     performSend: () => undefined,

@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import * as path from "path";
 import {
+  buildHistoryResponseKey,
   createDefaultCollection,
   createDefaultConfigFile,
   createDefaultRequest,
@@ -21,6 +22,7 @@ import {
   cloneRequest,
   createHttpKeyValue,
   isHttpMethod,
+  normalizeHistoryRecord,
   sanitizeRequestEntity,
 } from "./types";
 
@@ -347,14 +349,23 @@ export class HttpClientStore {
 
   public getHistory(): HttpHistoryRecord[] {
     const history = this.stateStore.get<HttpHistoryRecord[]>(KEY_HISTORY, createEmptyHistory()) ?? [];
-    return history.map((record) => ({
-      ...record,
-      request: normalizeRequest(record.request),
-    }));
+    return history.map((record) =>
+      normalizeHistoryRecord({
+        ...record,
+        request: normalizeRequest(record.request),
+      })
+    );
   }
 
   public async recordHistory(record: HttpHistoryRecord): Promise<void> {
-    const nextHistory = [record, ...this.getHistory().filter((item) => item.id !== record.id)].slice(
+    const all = this.getHistory();
+    const key = buildHistoryResponseKey(record.request.method, record.request.url);
+    const existing = all.find((item) => buildHistoryResponseKey(item.request.method, item.request.url) === key);
+    const merged: HttpHistoryRecord = normalizeHistoryRecord({
+      ...record,
+      id: existing?.id ?? record.id,
+    });
+    const nextHistory = [merged, ...all.filter((item) => item.id !== merged.id)].slice(
       0,
       HTTP_CLIENT_HISTORY_LIMIT
     );

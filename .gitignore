@@ -8,3 +8,4 @@ node_modules
 .vscode-test/
 *.vsix
 eh_keil_tool
+mx_http_client.json

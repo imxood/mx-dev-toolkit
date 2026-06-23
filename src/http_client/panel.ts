@@ -10,6 +10,7 @@ import {
   ExtensionToWebviewMessage,
   HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS,
   HTTP_CLIENT_DEFAULT_TIMEOUT_MS,
+  HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES,
   HTTP_CLIENT_RESPONSE_ACK_TIMEOUT_MS,
   HTTP_CLIENT_WEBVIEW_BUILD_ID,
   HttpClientError,
@@ -741,7 +742,7 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.currentDraft = cloneRequest(history.request);
     this.selectedHistoryId = historyId;
     this.dirty = false;
-    this.currentResponse = null;
+    this.currentResponse = history.response ? cloneResponseResult(history.response) : null;
     this.responseTab = "body";
     if (options.buildViewState === false && options.postState === false) {
       return null;
@@ -932,6 +933,7 @@ export class HttpClientPanelController implements vscode.Disposable {
     environmentId: string | null,
     response: HttpResponseResult
   ): HttpHistoryRecord {
+    const snapshot = clipResponseForHistory(response);
     return {
       id: randomUUID(),
       request: cloneRequest(request),
@@ -944,6 +946,8 @@ export class HttpClientPanelController implements vscode.Disposable {
         ok: response.ok,
         sizeBytes: response.meta.sizeBytes,
       },
+      response: snapshot.response,
+      responseTruncated: snapshot.truncated,
     };
   }
 
@@ -1159,6 +1163,34 @@ function hasMeaningfulRequestContent(request: HttpRequestEntity | null): boolean
   }
 
   return request.params.some((item) => item.key.trim() || item.value.trim()) || request.headers.some((item) => item.key.trim() || item.value.trim());
+}
+
+function clipResponseForHistory(response: HttpResponseResult): { response: HttpResponseResult; truncated: boolean } {
+  const rawBytes = Buffer.byteLength(response.bodyRawText, "utf8");
+  if (rawBytes <= HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES) {
+    return { response, truncated: false };
+  }
+
+  const truncatedText = Buffer.from(response.bodyRawText, "utf8")
+    .subarray(0, HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES)
+    .toString("utf8");
+  return {
+    response: {
+      ...response,
+      bodyRawText: truncatedText,
+      bodyText: truncatedText,
+      bodyPrettyText: truncatedText,
+    },
+    truncated: true,
+  };
+}
+
+function cloneResponseResult(response: HttpResponseResult): HttpResponseResult {
+  return {
+    ...response,
+    headers: response.headers.map((header) => ({ ...header })),
+    meta: { ...response.meta, unresolvedVariables: [...response.meta.unresolvedVariables] },
+  };
 }
 
 const CURL_PROMPT_PLACEHOLDER = "curl -X POST https://example.com -H 'Content-Type: application/json' -d '{\"name\":\"demo\"}'";

@@ -98,6 +98,7 @@ export interface WorkbenchController {
   setBodyMode(mode: HttpRequestEntity["bodyMode"]): void;
   setBodyText(text: string): void;
   formatJsonBody(): boolean;
+  formatResponseJson(): boolean;
   setResponseSearch(keyword: string): void;
   toggleResponsePretty(): void;
   performSend(): void;
@@ -845,6 +846,38 @@ export function useWorkbenchController(): WorkbenchController {
     }));
   }, [updateUiState]);
 
+  const formatResponseJson = useCallback((): boolean => {
+    const response = viewStateRef.current.response;
+    if (!response) {
+      notifyToast("当前没有可格式化的响应内容", "warning");
+      return false;
+    }
+
+    try {
+      const parsed = JSON.parse(response.bodyRawText || "");
+      const prettyText = JSON.stringify(parsed, null, 2);
+      updateUiState((current) => ({ ...current, responsePretty: true }));
+      updateViewState((current) =>
+        current.response
+          ? {
+              ...current,
+              response: {
+                ...current.response,
+                bodyText: prettyText,
+                bodyPrettyText: prettyText,
+                isJson: true,
+              },
+            }
+          : current
+      );
+      notifyToast("JSON 已格式化", "success");
+      return true;
+    } catch {
+      notifyToast("当前响应不是合法 JSON", "warning");
+      return false;
+    }
+  }, [notifyToast, updateUiState, updateViewState]);
+
   const openResponseEditor = useCallback(() => {
     const response = viewStateRef.current.response;
     if (!response) {
@@ -1244,6 +1277,7 @@ export function useWorkbenchController(): WorkbenchController {
     setBodyMode,
     setBodyText,
     formatJsonBody,
+    formatResponseJson,
     setResponseSearch,
     toggleResponsePretty,
     performSend,
