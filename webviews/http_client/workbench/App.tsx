@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { SidebarSurface } from "../sidebar/SidebarApp";
 import { isScratchDraft } from "../shared/workbench_model";
 import { type WorkbenchController, useWorkbenchController } from "./useWorkbenchController";
@@ -6,16 +6,19 @@ import { type WorkbenchController, useWorkbenchController } from "./useWorkbench
 export function App(): React.ReactElement {
   const controller = useWorkbenchController();
   const [helpOpen, setHelpOpen] = useState(false);
-  return <AppView controller={controller} helpOpen={helpOpen} onOpenHelp={() => setHelpOpen(true)} onCloseHelp={() => setHelpOpen(false)} />;
+  const elapsedMs = useElapsedMs(controller.viewState.requestRunning, controller.viewState.response?.meta.durationMs ?? null);
+  return <AppView controller={controller} elapsedMs={elapsedMs} helpOpen={helpOpen} onOpenHelp={() => setHelpOpen(true)} onCloseHelp={() => setHelpOpen(false)} />;
 }
 
 export function AppView({
   controller,
+  elapsedMs,
   helpOpen = false,
   onOpenHelp,
   onCloseHelp,
 }: {
   controller: WorkbenchController;
+  elapsedMs: number;
   helpOpen?: boolean;
   onOpenHelp?: () => void;
   onCloseHelp?: () => void;
@@ -34,7 +37,7 @@ export function AppView({
       </aside>
 
       <main className="editor-shell">
-        <section className={`http-toolbar${scratchDraft ? " context-new" : ""}${viewState.selectedHistoryId ? " context-history" : ""}`}>
+        <section className={`http-toolbar${scratchDraft ? " context-new" : ""}`}>
           <div className="toolbar-main">
             <select aria-label="HTTP Method" value={draft?.method ?? "GET"} onChange={(event) => controller.setMethod(event.target.value as never)} disabled={!draft}>
               <option value="GET">GET</option>
@@ -71,9 +74,6 @@ export function AppView({
             <div className="toolbar-secondary-actions">
               <button id="load-test-button" className="secondary-button" type="button" onClick={loadTestRunning ? controller.stopLoadTest : controller.performLoadTest}>
                 {loadTestRunning ? "停止" : "压测"}
-              </button>
-              <button id="save-button" className="secondary-button" type="button" onClick={controller.performSave}>
-                保存
               </button>
               <button id="import-curl-button" className="ghost-button" type="button" onClick={controller.importCurl}>
                 导入 cURL
@@ -116,7 +116,15 @@ export function AppView({
           </div>
           <div id="response-summary" className="response-summary">
             {viewState.requestRunning ? (
-              <span className="summary-pill neutral">请求中</span>
+              <>
+                <span className="summary-pill neutral in-progress">
+                  <span className="spinner-dot" aria-hidden="true" />
+                  请求中 {formatElapsedShort(elapsedMs)}
+                </span>
+                <button type="button" className="ghost-button compact" onClick={() => controller.cancelRequest()}>
+                  取消
+                </button>
+              </>
             ) : response ? (
               <>
                 <span className={`summary-pill ${responseSummaryKind}`}>{response.status} {response.statusText}</span>
@@ -144,7 +152,7 @@ export function AppView({
           </button>
         </div>
 
-        <div className="response-content">{renderResponseTab(controller)}</div>
+        <div className="response-content">{renderResponseTab(controller, elapsedMs)}</div>
       </section>
     </div>
   );
@@ -177,7 +185,6 @@ function HelpDialog({ onClose }: { onClose?: () => void }): React.ReactElement {
             <h4>快捷键</h4>
             <ul>
               <li>`Ctrl/Cmd + Enter`: 发送请求</li>
-              <li>`Ctrl/Cmd + S`: 保存当前请求</li>
             </ul>
           </section>
           <section className="help-card">
@@ -268,7 +275,7 @@ function renderKeyValueEditor(
   );
 }
 
-function renderResponseTab(controller: WorkbenchController): React.ReactElement {
+function renderResponseTab(controller: WorkbenchController, elapsedMs: number): React.ReactElement {
   const { viewState, uiState } = controller;
   const response = viewState.response;
 
@@ -355,6 +362,26 @@ function renderResponseTab(controller: WorkbenchController): React.ReactElement 
   }
 
   if (!response) {
+    if (viewState.requestRunning) {
+      return (
+        <div className="progress-panel" role="status" aria-live="polite">
+          <div className="spinner" aria-hidden="true">
+            <span className="spinner-ring" />
+          </div>
+          <div className="progress-label">正在发送请求…</div>
+          <div className="progress-timer" aria-label="已耗时">
+            {formatElapsedLong(elapsedMs)}
+          </div>
+          <button
+            type="button"
+            className="ghost-button cancel-progress-button"
+            onClick={() => controller.cancelRequest()}
+          >
+            取消请求
+          </button>
+        </div>
+      );
+    }
     if (uiState.lastErrorMessage) {
       return (
         <div className="empty-panel error-panel">
@@ -442,4 +469,45 @@ function renderResponseTab(controller: WorkbenchController): React.ReactElement 
         </div>
       </div>
   );
+}
+
+/**
+ * 请求过程中, 每 100ms 更新一次已耗时 (毫秒).
+ * - requestRunning=true: 实时累加 performance.now() - startedAt
+ * - requestRunning=false: 锁定到最终 durationMs
+ */
+function useElapsedMs(running: boolean, finalDurationMs: number | null): number {
+  const [elapsedMs, setElapsedMs] = useState<number>(() =>
+    running ? 0 : finalDurationMs ?? 0
+  );
+
+  useEffect(() => {
+    if (!running) {
+      setElapsedMs(finalDurationMs ?? 0);
+      return;
+    }
+    const startedAt = performance.now();
+    setElapsedMs(0);
+    const id = window.setInterval(() => {
+      setElapsedMs(Math.round(performance.now() - startedAt));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [running, finalDurationMs]);
+
+  return elapsedMs;
+}
+
+/** 紧凑显示: 用于 summary pill. 300ms → "0.3s", 1500ms → "1.5s", 12345ms → "12.3s" */
+function formatElapsedShort(elapsedMs: number): string {
+  if (elapsedMs < 1000) {
+    return `${Math.max(0, Math.round(elapsedMs / 100) / 10).toFixed(1)}s`;
+  }
+  const seconds = elapsedMs / 1000;
+  return `${seconds.toFixed(1)}s`;
+}
+
+/** 大字号显示: 用于中央 progress panel. 1234ms → "1.23 s", 5ms → "0.01 s" */
+function formatElapsedLong(elapsedMs: number): string {
+  const seconds = Math.max(0, elapsedMs) / 1000;
+  return `${seconds.toFixed(2)} s`;
 }

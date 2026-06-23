@@ -200,6 +200,20 @@ body {
   letter-spacing: 0;
 }
 
+.panel-head-action {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.panel-head-action:hover {
+  color: var(--text);
+}
+
 .list-body {
   display: flex;
   flex-direction: column;
@@ -313,6 +327,25 @@ body {
   background: rgba(117, 190, 255, 0.06);
 }
 
+.req-item.dragging {
+  opacity: 0.45;
+  transform: translateX(2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.req-item.dragging .collection-item {
+  border-color: transparent;
+  background: transparent;
+}
+
+.group-items.collection-body.drop-target {
+  outline: 2px dashed rgba(117, 190, 255, 0.55);
+  outline-offset: -2px;
+  background: rgba(117, 190, 255, 0.08);
+  border-radius: var(--radius);
+  transition: background-color 120ms ease;
+}
+
 .collection-item,
 .list-item,
 .environment-item {
@@ -332,6 +365,58 @@ body {
 .request-row .collection-item {
   min-width: 0;
   padding-right: 4px;
+}
+
+.req-item {
+  min-width: 0;
+}
+
+.req-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.req-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.req-meta {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+}
+
+.req-meta .status,
+.req-meta .duration,
+.req-meta .time {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.req-meta .status.ok {
+  color: #73c991;
+}
+
+.req-meta .status.warn {
+  color: #d7ba7d;
+}
+
+.req-meta .status.err {
+  color: #f48771;
 }
 
 .request-copy-block {

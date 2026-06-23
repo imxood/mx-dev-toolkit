@@ -1,5 +1,5 @@
-import { randomUUID } from "crypto";
 import * as vscode from "vscode";
+import { exportRequestToCurl } from "./curl_export";
 import { importCurlToRequest } from "./curl_import";
 import { HttpLoadTestRunner } from "./load_runner";
 import { resolveRequest } from "./resolver";
@@ -8,9 +8,9 @@ import { HttpClientStore } from "./store";
 import { normalizeToastInput, ToastService } from "../toast/service";
 import {
   ExtensionToWebviewMessage,
+  HTTP_CLIENT_DEFAULT_COLLECTION_ID,
   HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS,
   HTTP_CLIENT_DEFAULT_TIMEOUT_MS,
-  HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES,
   HTTP_CLIENT_RESPONSE_ACK_TIMEOUT_MS,
   HTTP_CLIENT_WEBVIEW_BUILD_ID,
   HttpClientError,
@@ -18,7 +18,6 @@ import {
   HttpClientSendPayload,
   HttpClientViewState,
   HttpEnvironmentEntity,
-  HttpHistoryRecord,
   HttpLoadTestProfile,
   HttpLoadTestProgress,
   HttpLoadTestResult,
@@ -45,7 +44,6 @@ export class HttpClientPanelController implements vscode.Disposable {
   private readonly requestRunner = new HttpRequestRunner();
   private readonly loadTestRunner = new HttpLoadTestRunner(this.requestRunner);
   private currentDraft: HttpRequestEntity | null = null;
-  private selectedHistoryId: string | null = null;
   private dirty = false;
   private currentResponse: HttpResponseResult | null = null;
   private requestAbortController: AbortController | null = null;
@@ -156,95 +154,6 @@ export class HttpClientPanelController implements vscode.Disposable {
     return this.buildViewState();
   }
 
-  public async openRequest(requestId: string): Promise<void> {
-    const viewState = await this.selectSavedRequest(requestId, { postState: false });
-    if (!viewState) {
-      return;
-    }
-    await this.show(viewState);
-  }
-
-  public async openHistory(historyId: string): Promise<void> {
-    const viewState = await this.selectHistoryItem(historyId, { postState: false });
-    if (!viewState) {
-      return;
-    }
-    await this.show(viewState);
-  }
-
-  public async createRequest(collectionId: string | null): Promise<void> {
-    const viewState = await this.createScratchRequest(collectionId, { postState: false });
-    await this.show(viewState ?? undefined);
-  }
-
-  public async createCollection(): Promise<void> {
-    await this.createCollectionByPrompt();
-  }
-
-  public async renameCollection(collectionId: string): Promise<void> {
-    await this.renameCollectionByPrompt(collectionId);
-  }
-
-  public async removeCollection(collectionId: string): Promise<void> {
-    await this.deleteCollection(collectionId);
-  }
-
-  public async createEnvironment(): Promise<void> {
-    const name = await vscode.window.showInputBox({
-      prompt: "请输入环境名称",
-      ignoreFocusOut: true,
-    });
-    if (!name) {
-      return;
-    }
-    const environment = await this.store.createEnvironment(name);
-    await this.store.setActiveEnvironmentId(environment.id);
-    await this.postState();
-    await this.notifyToast(`环境已创建: ${environment.name}`, "success");
-  }
-
-  public async selectEnvironment(
-    environmentId: string | null,
-    options: { postState?: boolean } = {}
-  ): Promise<void> {
-    await this.store.setActiveEnvironmentId(environmentId);
-    if (options.postState !== false) {
-      await this.postState();
-    }
-  }
-
-  public async saveEnvironment(environment: HttpEnvironmentEntity): Promise<void> {
-    const saved = await this.store.saveEnvironment(environment);
-    await this.postState();
-    await this.notifyToast(`环境已保存: ${saved.name}`, "success");
-  }
-
-  public async deleteEnvironment(environmentId: string): Promise<void> {
-    const confirmed = await vscode.window.showWarningMessage("确认删除该环境?", { modal: true }, "删除");
-    if (confirmed !== "删除") {
-      return;
-    }
-    await this.store.deleteEnvironment(environmentId);
-    await this.postState();
-    await this.notifyToast("环境已删除", "success");
-  }
-
-  public async renameRequest(requestId: string): Promise<void> {
-    await this.renameRequestByPrompt(requestId);
-  }
-
-  public async removeRequest(requestId: string): Promise<void> {
-    await this.deleteRequest(requestId);
-  }
-
-  public async duplicateSavedRequest(requestId: string): Promise<void> {
-    await this.duplicateRequest(requestId);
-  }
-
-  public async setRequestFavorite(requestId: string, favorite: boolean): Promise<void> {
-    await this.toggleFavorite(requestId, favorite);
-  }
-
   private async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     switch (message.type) {
       case "mxToast/notify":
@@ -288,16 +197,7 @@ export class HttpClientPanelController implements vscode.Disposable {
         await this.postState();
         return;
       case "httpClient/selectRequest":
-        {
-          const startedAt = performance.now();
-          this.channel.appendLine(`[HttpClientPerf][request-select] recv requestId=${message.payload.requestId}`);
-          await this.selectSavedRequest(message.payload.requestId, { postState: false, buildViewState: false });
-          this.channel.appendLine(
-            `[HttpClientPerf][request-select] host_applied requestId=${message.payload.requestId} dt=${formatPerfDuration(
-              performance.now() - startedAt
-            )}`
-          );
-        }
+        await this.selectSavedRequest(message.payload.requestId, { postState: false });
         return;
       case "httpClient/createScratchRequest":
         await this.createScratchRequest(null);
@@ -329,15 +229,14 @@ export class HttpClientPanelController implements vscode.Disposable {
       case "httpClient/createRequest":
         await this.createScratchRequest(message.payload.collectionId, {
           postState: false,
-          buildViewState: false,
           request: message.payload.request,
         });
         return;
       case "httpClient/createEnvironment":
         await this.createEnvironment();
         return;
-      case "httpClient/renameRequestPrompt":
-        await this.renameRequestByPrompt(message.payload.requestId);
+      case "httpClient/renameRequest":
+        await this.renameRequestByPrompt(message.payload.requestId, message.payload.name);
         return;
       case "httpClient/deleteRequest":
         await this.deleteRequest(message.payload.requestId);
@@ -345,8 +244,11 @@ export class HttpClientPanelController implements vscode.Disposable {
       case "httpClient/duplicateRequest":
         await this.duplicateRequest(message.payload.requestId);
         return;
-      case "httpClient/toggleFavorite":
-        await this.toggleFavorite(message.payload.requestId, message.payload.favorite, { postState: false });
+      case "httpClient/moveRequest":
+        await this.moveRequest(message.payload.requestId, message.payload.targetCollectionId);
+        return;
+      case "httpClient/exportCurl":
+        await this.exportCurlForRequest(message.payload.requestId);
         return;
       case "httpClient/selectEnvironment":
         await this.selectEnvironment(message.payload.environmentId, { postState: false });
@@ -356,24 +258,6 @@ export class HttpClientPanelController implements vscode.Disposable {
         return;
       case "httpClient/deleteEnvironment":
         await this.deleteEnvironment(message.payload.environmentId);
-        return;
-      case "httpClient/selectHistory":
-        {
-          const startedAt = performance.now();
-          this.channel.appendLine(`[HttpClientPerf][history-select] recv historyId=${message.payload.historyId}`);
-          await this.selectHistoryItem(message.payload.historyId, { postState: false, buildViewState: false });
-          this.channel.appendLine(
-            `[HttpClientPerf][history-select] host_applied historyId=${message.payload.historyId} dt=${formatPerfDuration(
-              performance.now() - startedAt
-            )}`
-          );
-        }
-        return;
-      case "httpClient/promptSaveHistoryToCollection":
-        await this.promptSaveHistoryToCollection(message.payload.historyId);
-        return;
-      case "httpClient/saveHistoryToCollection":
-        await this.saveHistoryToCollection(message.payload.historyId, message.payload.collectionId);
         return;
       case "httpClient/openResponseEditor":
         await this.openResponseEditor(message.payload.content, message.payload.language);
@@ -407,9 +291,8 @@ export class HttpClientPanelController implements vscode.Disposable {
     this.currentDraft = cloneRequest(request);
     this.dirty = dirty;
     this.scheduleActiveRequestIdPersist(request.id);
-    const config = await this.store.ensureInitialized();
-    const savedRequest = config.requests.find((item) => item.id === request.id);
-    if (savedRequest) {
+    const lookup = this.store.findRequestById(request.id);
+    if (lookup) {
       await this.store.saveDraft(this.currentDraft, dirty);
     } else {
       await this.store.saveScratchDraft(this.currentDraft);
@@ -418,49 +301,38 @@ export class HttpClientPanelController implements vscode.Disposable {
 
   private async selectSavedRequest(
     requestId: string,
-    options: { postState?: boolean; buildViewState?: boolean } = {}
+    options: { postState?: boolean } = {}
   ): Promise<HttpClientViewState | null> {
-    const config = await this.store.ensureInitialized();
-    const savedRequest = config.requests.find((item) => item.id === requestId);
-    if (!savedRequest) {
+    const lookup = this.store.findRequestById(requestId);
+    if (!lookup) {
       await this.postError(`未找到请求: ${requestId}`);
       return null;
     }
     const draftState = this.store.getDraft(requestId);
-    this.currentDraft = draftState.draft ? cloneRequest(draftState.draft) : cloneRequest(savedRequest);
-    this.selectedHistoryId = null;
+    this.currentDraft = draftState.draft ? cloneRequest(draftState.draft) : cloneRequest(lookup.request);
     this.dirty = draftState.dirty;
     this.scheduleActiveRequestIdPersist(requestId);
-    this.currentResponse = null;
-    if (options.buildViewState === false && options.postState === false) {
-      return null;
-    }
-    const viewState = await this.buildViewState();
+    this.currentResponse = lookup.request.lastResponseSnapshot ? cloneResponseResult(lookup.request.lastResponseSnapshot) : null;
     if (options.postState !== false) {
-      await this.postState(viewState);
+      await this.postState();
     }
-    return viewState;
+    return null;
   }
 
   private async createScratchRequest(
     collectionId: string | null,
-    options: { postState?: boolean; buildViewState?: boolean; request?: HttpRequestEntity } = {}
+    options: { postState?: boolean; request?: HttpRequestEntity } = {}
   ): Promise<HttpClientViewState | null> {
     const draft = await this.store.createScratchRequest(collectionId, options.request);
     this.markActiveRequestPersisted(draft.id);
     this.currentDraft = cloneRequest(draft);
-    this.selectedHistoryId = null;
     this.dirty = true;
     this.currentResponse = null;
     this.responseTab = "body";
-    if (options.buildViewState === false && options.postState === false) {
-      return null;
-    }
-    const viewState = await this.buildViewState();
     if (options.postState !== false) {
-      await this.postState(viewState);
+      await this.postState();
     }
-    return viewState;
+    return null;
   }
 
   private async saveDraft(request: HttpRequestEntity): Promise<void> {
@@ -468,7 +340,6 @@ export class HttpClientPanelController implements vscode.Disposable {
       const savedRequest = await this.store.saveRequest(request);
       this.markActiveRequestPersisted(savedRequest.id);
       this.currentDraft = cloneRequest(savedRequest);
-      this.selectedHistoryId = null;
       this.dirty = false;
       this.channel.appendLine(`[HttpClient] saved request ${savedRequest.method} ${savedRequest.name}`);
       await this.postState();
@@ -513,9 +384,15 @@ export class HttpClientPanelController implements vscode.Disposable {
       this.channel.appendLine(
         `[HttpClient] response ${response.status} ${response.statusText || ""} ${response.meta.durationMs}ms ${response.meta.sizeBytes}B`
       );
-      const record = this.createHistoryRecord(payload.request, payload.environmentId, response);
+      // 先把响应推到 webview, 再后台异步写盘.
+      // 这样 31ms 的请求不会因为同步 fs.writeFile 变成几秒延迟.
+      //
+      // 注意: 不再调用 postState(). httpClient/response 消息已经通过 patchWorkbenchSession
+      // 设了 response / requestRunning=false / responseTab="body", webview 端不需要再收一次
+      // 完整 state. 而 postState() 会序列化整个 HttpClientViewState (含 config + 所有
+      // collections + 所有 lastResponseSnapshot), 在请求积累后可能涨到几 MB, 序列化 +
+      // IPC 传输是几秒延迟的主要源头.
       this.responseTab = "body";
-      this.channel.appendLine(`[HttpClient] posting response to webview record=${record.id}`);
       const responseDelivered = await this.postMessage({
         type: "httpClient/response",
         payload: response,
@@ -524,10 +401,9 @@ export class HttpClientPanelController implements vscode.Disposable {
       if (responseDelivered) {
         this.scheduleResponseAckWait();
       }
-      await this.postState();
-      this.channel.appendLine("[HttpClient] response state refreshed");
-      this.channel.appendLine(`[HttpClient] history save scheduled ${record.id}`);
-      void this.persistHistoryRecord(record);
+
+      // 快照写盘放后台, 不阻塞用户感知.
+      this.persistRequestSnapshotInBackground(payload.request, response, payload.environmentId);
     } catch (error) {
       this.clearResponseAckWait();
       const message = error instanceof HttpClientError ? error.details.message : (error as Error).message;
@@ -537,21 +413,36 @@ export class HttpClientPanelController implements vscode.Disposable {
     } finally {
       this.requestRunning = false;
       this.requestAbortController = null;
-      await this.postState();
       this.channel.appendLine("[HttpClient] request cycle completed");
     }
   }
 
-  private async persistHistoryRecord(record: HttpHistoryRecord): Promise<void> {
+  private persistRequestSnapshotInBackground(
+    request: HttpRequestEntity,
+    response: HttpResponseResult,
+    environmentId: string | null
+  ): void {
+    void this.persistRequestSnapshot(request, response, environmentId);
+  }
+
+  private async persistRequestSnapshot(
+    request: HttpRequestEntity,
+    response: HttpResponseResult,
+    environmentId: string | null
+  ): Promise<HttpRequestEntity> {
     try {
-      this.channel.appendLine(`[HttpClient] history save started ${record.id}`);
-      await this.store.recordHistory(record);
-      this.channel.appendLine(`[HttpClient] history saved ${record.id}`);
-      await this.postState();
-      this.channel.appendLine(`[HttpClient] history state refreshed ${record.id}`);
+      this.channel.appendLine(`[HttpClient] snapshot upsert started method=${request.method} url=${request.url}`);
+      const updated = await this.store.upsertRequestByUrl(request, response, this.defaultCollectionIdFor(request));
+      this.channel.appendLine(`[HttpClient] snapshot saved requestId=${updated.id} status=${updated.lastStatus}`);
+      return updated;
     } catch (error) {
-      this.channel.appendLine(`[HttpClient] history save failed: ${(error as Error).message}`);
+      this.channel.appendLine(`[HttpClient] snapshot save failed: ${(error as Error).message}`);
+      return request;
     }
+  }
+
+  private defaultCollectionIdFor(_request: HttpRequestEntity): string {
+    return HTTP_CLIENT_DEFAULT_COLLECTION_ID;
   }
 
   private async importCurlByPrompt(): Promise<void> {
@@ -572,9 +463,7 @@ export class HttpClientPanelController implements vscode.Disposable {
         }
 
         const base =
-          target === "新建请求导入"
-            ? createDefaultRequest("导入 cURL", currentDraft.collectionId)
-            : currentDraft;
+          target === "新建请求导入" ? createDefaultRequest("导入 cURL") : currentDraft;
         const nextRequest = importCurlToRequest(raw, base);
         this.currentDraft = cloneRequest(nextRequest);
         this.dirty = true;
@@ -614,8 +503,9 @@ export class HttpClientPanelController implements vscode.Disposable {
     if (!name) {
       return;
     }
-    await this.store.createCollection(name);
+    const collection = await this.store.createCollection(name);
     await this.postState();
+    await this.notifyToast(`集合已创建: ${collection.name}`, "success");
   }
 
   private async renameCollectionByPrompt(collectionId: string): Promise<void> {
@@ -623,6 +513,10 @@ export class HttpClientPanelController implements vscode.Disposable {
     const collection = config.collections.find((item) => item.id === collectionId);
     if (!collection) {
       await this.postError("集合不存在");
+      return;
+    }
+    if (collection.isDefault) {
+      await this.postError("默认集合不可重命名");
       return;
     }
     const name = await vscode.window.showInputBox({
@@ -638,8 +532,18 @@ export class HttpClientPanelController implements vscode.Disposable {
   }
 
   private async deleteCollection(collectionId: string): Promise<void> {
+    const config = await this.store.ensureInitialized();
+    const collection = config.collections.find((item) => item.id === collectionId);
+    if (!collection) {
+      await this.postError("集合不存在");
+      return;
+    }
+    if (collection.isDefault) {
+      await this.postError("默认集合不可删除");
+      return;
+    }
     const confirmed = await vscode.window.showWarningMessage(
-      "删除集合后, 其中请求会移动到未分组. 是否继续?",
+      `删除集合 ${collection.name} 后, 其中请求会移动到默认集合. 是否继续?`,
       { modal: true },
       "删除"
     );
@@ -647,39 +551,48 @@ export class HttpClientPanelController implements vscode.Disposable {
       await this.postState();
       return;
     }
-    await this.store.deleteCollection(collectionId);
-    await this.postState();
+    try {
+      await this.store.deleteCollection(collectionId);
+      await this.postState();
+      await this.notifyToast("集合已删除", "success");
+    } catch (error) {
+      await this.postError((error as Error).message);
+    }
   }
 
-  private async renameRequestByPrompt(requestId: string): Promise<void> {
-    const config = await this.store.ensureInitialized();
-    const request = config.requests.find((item) => item.id === requestId) ?? this.currentDraft;
-    if (!request) {
+  private async renameRequestByPrompt(requestId: string, preferredName?: string): Promise<void> {
+    const lookup = this.store.findRequestById(requestId);
+    if (!lookup) {
       await this.postError("请求不存在");
       return;
     }
-    const name = await vscode.window.showInputBox({
+    const name = preferredName ?? (await vscode.window.showInputBox({
       prompt: "请输入新的请求名称",
-      value: request.name,
+      value: lookup.request.name,
       ignoreFocusOut: true,
-    });
+    }));
     if (!name) {
       return;
     }
-    if (config.requests.some((item) => item.id === requestId)) {
-      await this.store.renameRequest(requestId, name);
-      if (this.currentDraft?.id === requestId) {
-        this.currentDraft.name = name;
-      }
-    } else if (this.currentDraft?.id === requestId) {
+    await this.store.renameRequest(requestId, name);
+    if (this.currentDraft?.id === requestId) {
       this.currentDraft.name = name;
-      await this.handleDraftChanged(this.currentDraft, true);
     }
     await this.postState();
+    await this.notifyToast("请求已重命名", "success");
   }
 
   private async deleteRequest(requestId: string): Promise<void> {
-    const confirmed = await vscode.window.showWarningMessage("确认删除该请求?", { modal: true }, "删除");
+    const lookup = this.store.findRequestById(requestId);
+    if (!lookup) {
+      await this.postError("请求不存在");
+      return;
+    }
+    const confirmed = await vscode.window.showWarningMessage(
+      `确认删除请求 ${lookup.request.name}?`,
+      { modal: true },
+      "删除"
+    );
     if (confirmed !== "删除") {
       await this.postState();
       return;
@@ -690,12 +603,12 @@ export class HttpClientPanelController implements vscode.Disposable {
     }
     if (this.currentDraft?.id === requestId) {
       this.currentDraft = null;
-      this.selectedHistoryId = null;
       this.dirty = false;
       this.currentResponse = null;
     }
     await this.ensureDraftLoaded();
     await this.postState();
+    await this.notifyToast("请求已删除", "success");
   }
 
   private async duplicateRequest(requestId: string): Promise<void> {
@@ -703,132 +616,87 @@ export class HttpClientPanelController implements vscode.Disposable {
       const duplicate = await this.store.duplicateRequest(requestId);
       this.markActiveRequestPersisted(duplicate.id);
       this.currentDraft = cloneRequest(duplicate);
-      this.selectedHistoryId = null;
       this.dirty = false;
       await this.postState();
+      await this.notifyToast("请求已复制", "success");
     } catch (error) {
       await this.postError((error as Error).message);
-      await this.postState();
     }
   }
 
-  private async toggleFavorite(
-    requestId: string,
-    favorite: boolean,
-    options: { postState?: boolean } = {}
-  ): Promise<void> {
+  private async moveRequest(requestId: string, targetCollectionId: string): Promise<void> {
     try {
-      await this.store.setRequestFavorite(requestId, favorite);
-      if (this.currentDraft?.id === requestId) {
-        this.currentDraft.favorite = favorite;
-      }
-      if (options.postState !== false) {
-        await this.postState();
-      }
-    } catch (error) {
-      await this.postError((error as Error).message);
-    }
-  }
-
-  private async selectHistoryItem(
-    historyId: string,
-    options: { postState?: boolean; buildViewState?: boolean } = {}
-  ): Promise<HttpClientViewState | null> {
-    const history = this.store.getHistoryItem(historyId);
-    if (!history) {
-      await this.postError("历史记录不存在");
-      return null;
-    }
-    this.currentDraft = cloneRequest(history.request);
-    this.selectedHistoryId = historyId;
-    this.dirty = false;
-    this.currentResponse = history.response ? cloneResponseResult(history.response) : null;
-    this.responseTab = "body";
-    if (options.buildViewState === false && options.postState === false) {
-      return null;
-    }
-    const viewState = await this.buildViewState();
-    if (options.postState !== false) {
-      await this.postState(viewState);
-    }
-    return viewState;
-  }
-
-  private async saveHistoryToCollection(historyId: string, collectionId: string): Promise<void> {
-    const history = this.store.getHistoryItem(historyId);
-    if (!history) {
-      await this.postError("历史记录不存在");
-      return;
-    }
-
-    const config = await this.store.ensureInitialized();
-    const collection = config.collections.find((item) => item.id === collectionId);
-    if (!collection) {
-      await this.postError("集合不存在");
-      return;
-    }
-
-    try {
-      const now = createNowIsoString();
-      const savedRequest = await this.store.saveRequest({
-        ...cloneRequest(history.request),
-        id: randomUUID(),
-        collectionId,
-        createdAt: now,
-        updatedAt: now,
-      });
-      this.markActiveRequestPersisted(savedRequest.id);
-      this.currentDraft = cloneRequest(savedRequest);
-      this.selectedHistoryId = null;
-      this.dirty = false;
-      this.currentResponse = null;
-      this.responseTab = "body";
-      await this.postState();
-      await this.notifyToast(`已保存到集合: ${collection.name}`, "success");
-    } catch (error) {
-      await this.postError((error as Error).message);
-    }
-  }
-
-  private async promptSaveHistoryToCollection(historyId: string): Promise<void> {
-    const config = await this.store.ensureInitialized();
-    const picked = await vscode.window.showQuickPick(
-      [
-        ...config.collections.map((collection) => ({
-          label: collection.name,
-          description: "已有集合",
-          collectionId: collection.id,
-        })),
-        {
-          label: "$(add) 新建集合",
-          description: "输入集合名称后保存",
-          collectionId: "__create__",
-        },
-      ],
-      {
-        title: "保存到集合",
-        placeHolder: "选择目标集合, 或新建集合",
-        ignoreFocusOut: true,
-      }
-    );
-    if (!picked) {
-      return;
-    }
-
-    let targetCollectionId = picked.collectionId;
-    if (targetCollectionId === "__create__") {
-      const name = await vscode.window.showInputBox({
-        prompt: "请输入新集合名称",
-        ignoreFocusOut: true,
-      });
-      if (!name) {
+      const lookup = this.store.findRequestById(requestId);
+      if (!lookup) {
+        await this.postError("请求不存在");
         return;
       }
-      const createdCollection = await this.store.createCollection(name);
-      targetCollectionId = createdCollection.id;
+      if (lookup.collection.id === targetCollectionId) {
+        return;
+      }
+      const updated = await this.store.moveRequest(requestId, targetCollectionId);
+      const config = await this.store.ensureInitialized();
+      const target = config.collections.find((item) => item.id === targetCollectionId);
+      await this.notifyToast(`已移至 ${target?.name ?? "目标集合"}`, "success");
+      this.channel.appendLine(`[HttpClient] request moved id=${requestId} target=${targetCollectionId} status=${updated.lastStatus}`);
+      await this.postState();
+    } catch (error) {
+      await this.postError((error as Error).message);
     }
+  }
 
-    await this.saveHistoryToCollection(historyId, targetCollectionId);
+  private async exportCurlForRequest(requestId: string): Promise<void> {
+    const lookup = this.store.findRequestById(requestId);
+    if (!lookup) {
+      await this.postError("请求不存在");
+      return;
+    }
+    const curl = exportRequestToCurl(lookup.request);
+    await this.postMessage({
+      type: "httpClient/curl",
+      payload: { requestId, curl },
+    });
+    this.channel.appendLine(`[HttpClient] curl exported requestId=${requestId} bytes=${curl.length}`);
+  }
+
+  private async createEnvironment(): Promise<void> {
+    const name = await vscode.window.showInputBox({
+      prompt: "请输入环境名称",
+      ignoreFocusOut: true,
+    });
+    if (!name) {
+      return;
+    }
+    const environment = await this.store.createEnvironment(name);
+    await this.store.setActiveEnvironmentId(environment.id);
+    await this.postState();
+    await this.notifyToast(`环境已创建: ${environment.name}`, "success");
+  }
+
+  private async selectEnvironment(
+    environmentId: string | null,
+    options: { postState?: boolean } = {}
+  ): Promise<void> {
+    await this.store.setActiveEnvironmentId(environmentId);
+    if (options.postState !== false) {
+      await this.postState();
+    }
+  }
+
+  private async saveEnvironment(environment: HttpEnvironmentEntity): Promise<void> {
+    const saved = await this.store.saveEnvironment(environment);
+    await this.postState();
+    await this.notifyToast(`环境已保存: ${saved.name}`, "success");
+  }
+
+  private async deleteEnvironment(environmentId: string): Promise<void> {
+    const confirmed = await vscode.window.showWarningMessage("确认删除该环境?", { modal: true }, "删除");
+    if (confirmed !== "删除") {
+      return;
+    }
+    await this.store.deleteEnvironment(environmentId);
+    await this.postState();
+    await this.notifyToast("环境已删除", "success");
   }
 
   private async startLoadTest(payload: HttpClientLoadTestPayload): Promise<void> {
@@ -928,39 +796,14 @@ export class HttpClientPanelController implements vscode.Disposable {
     }
   }
 
-  private createHistoryRecord(
-    request: HttpRequestEntity,
-    environmentId: string | null,
-    response: HttpResponseResult
-  ): HttpHistoryRecord {
-    const snapshot = clipResponseForHistory(response);
-    return {
-      id: randomUUID(),
-      request: cloneRequest(request),
-      environmentId,
-      executedAt: createNowIsoString(),
-      responseSummary: {
-        status: response.status,
-        statusText: response.statusText,
-        durationMs: response.meta.durationMs,
-        ok: response.ok,
-        sizeBytes: response.meta.sizeBytes,
-      },
-      response: snapshot.response,
-      responseTruncated: snapshot.truncated,
-    };
-  }
-
   private async buildViewState(): Promise<HttpClientViewState> {
     const snapshot = await this.store.loadSnapshot();
     const loadTestProfile = this.store.getLastLoadProfile(DEFAULT_LOAD_TEST_PROFILE);
     return {
       config: snapshot.config,
       activeRequestId: this.currentDraft?.id ?? snapshot.activeRequestId,
-      selectedHistoryId: this.selectedHistoryId,
       activeEnvironmentId: snapshot.activeEnvironmentId,
       draft: this.currentDraft ? cloneRequest(this.currentDraft) : null,
-      history: snapshot.history,
       response: this.currentResponse,
       requestRunning: this.requestRunning,
       loadTestProfile,
@@ -979,16 +822,12 @@ export class HttpClientPanelController implements vscode.Disposable {
     const snapshot = await this.store.loadSnapshot();
     const activeRequestId = snapshot.activeRequestId;
     if (activeRequestId) {
-      const draftState = this.store.getDraft(activeRequestId);
-      if (draftState.draft) {
-        this.currentDraft = cloneRequest(draftState.draft);
+      const lookup = this.store.findRequestById(activeRequestId);
+      if (lookup) {
+        const draftState = this.store.getDraft(activeRequestId);
+        this.currentDraft = draftState.draft ? cloneRequest(draftState.draft) : cloneRequest(lookup.request);
         this.dirty = draftState.dirty;
-        return;
-      }
-      const savedRequest = snapshot.config.requests.find((item) => item.id === activeRequestId);
-      if (savedRequest) {
-        this.currentDraft = cloneRequest(savedRequest);
-        this.dirty = false;
+        this.currentResponse = lookup.request.lastResponseSnapshot ? cloneResponseResult(lookup.request.lastResponseSnapshot) : null;
         return;
       }
     }
@@ -998,19 +837,29 @@ export class HttpClientPanelController implements vscode.Disposable {
       this.dirty = true;
       return;
     }
-    const firstRequest = snapshot.config.requests[0];
+    const firstRequest = this.findFirstRequest(snapshot.config);
     if (firstRequest) {
       this.currentDraft = cloneRequest(firstRequest);
       this.dirty = false;
       await this.store.setActiveRequestId(firstRequest.id);
       this.markActiveRequestPersisted(firstRequest.id);
+      this.currentResponse = firstRequest.lastResponseSnapshot ? cloneResponseResult(firstRequest.lastResponseSnapshot) : null;
       return;
     }
-    this.currentDraft = createDefaultRequest("新请求", snapshot.config.collections[0]?.id ?? null);
+    this.currentDraft = createDefaultRequest("新请求");
     this.dirty = true;
     await this.store.saveScratchDraft(this.currentDraft);
     await this.store.setActiveRequestId(this.currentDraft.id);
     this.markActiveRequestPersisted(this.currentDraft.id);
+  }
+
+  private findFirstRequest(config: HttpClientViewState["config"]): HttpRequestEntity | null {
+    for (const collection of config.collections) {
+      if (collection.requests.length > 0) {
+        return collection.requests[0];
+      }
+    }
+    return null;
   }
 
   private async postState(viewState?: HttpClientViewState): Promise<void> {
@@ -1046,7 +895,20 @@ export class HttpClientPanelController implements vscode.Disposable {
     if (!this.panel) {
       return false;
     }
-    return this.panel.webview.postMessage(message);
+    // 诊断: 记录每个 postMessage 的字节数和耗时, 排查 "请求 31ms + 几秒延迟" 现象.
+    const startedAt = performance.now();
+    let payloadBytes = 0;
+    try {
+      payloadBytes = Buffer.byteLength(JSON.stringify(message), "utf8");
+    } catch {
+      payloadBytes = -1;
+    }
+    const delivered = await this.panel.webview.postMessage(message);
+    const elapsedMs = performance.now() - startedAt;
+    this.channel.appendLine(
+      `[HttpClientPerf][postMessage] type=${message.type} bytes=${payloadBytes} elapsed=${formatPerfDuration(elapsedMs)} delivered=${delivered}`
+    );
+    return delivered;
   }
 
   private async ensureCurrentWebview(
@@ -1165,26 +1027,6 @@ function hasMeaningfulRequestContent(request: HttpRequestEntity | null): boolean
   return request.params.some((item) => item.key.trim() || item.value.trim()) || request.headers.some((item) => item.key.trim() || item.value.trim());
 }
 
-function clipResponseForHistory(response: HttpResponseResult): { response: HttpResponseResult; truncated: boolean } {
-  const rawBytes = Buffer.byteLength(response.bodyRawText, "utf8");
-  if (rawBytes <= HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES) {
-    return { response, truncated: false };
-  }
-
-  const truncatedText = Buffer.from(response.bodyRawText, "utf8")
-    .subarray(0, HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES)
-    .toString("utf8");
-  return {
-    response: {
-      ...response,
-      bodyRawText: truncatedText,
-      bodyText: truncatedText,
-      bodyPrettyText: truncatedText,
-    },
-    truncated: true,
-  };
-}
-
 function cloneResponseResult(response: HttpResponseResult): HttpResponseResult {
   return {
     ...response,
@@ -1196,7 +1038,7 @@ function cloneResponseResult(response: HttpResponseResult): HttpResponseResult {
 const CURL_PROMPT_PLACEHOLDER = "curl -X POST https://example.com -H 'Content-Type: application/json' -d '{\"name\":\"demo\"}'";
 
 function createNonce(): string {
-  return randomUUID().replace(/-/g, "");
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 function createCancelledLoadTestResult(progress: HttpLoadTestProgress | null): HttpLoadTestResult {

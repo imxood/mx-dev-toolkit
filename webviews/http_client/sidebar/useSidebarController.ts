@@ -4,16 +4,12 @@ import { getBootstrap } from "../shared/bootstrap";
 import {
   buildCollectionGroups,
   buildEnvironmentItems,
-  buildFavoriteRequests,
-  buildHistoryGroups,
-  buildUngroupedRequests,
   createInitialSidebarUiState,
-  type SidebarEnvironmentDraft,
-  type SidebarEnvironmentDraftRow,
   type ExtensionToSidebarMessage,
   type SidebarCollectionGroup,
+  type SidebarEnvironmentDraft,
+  type SidebarEnvironmentDraftRow,
   type SidebarEnvironmentItem,
-  type SidebarHistoryGroup,
   type SidebarTab,
   type SidebarToExtensionMessage,
   type SidebarUiState,
@@ -25,17 +21,13 @@ export interface SidebarController {
   viewState: HttpClientViewState | null;
   uiState: SidebarUiState;
   hasHostState: boolean;
-  historyGroups: SidebarHistoryGroup[];
   collectionGroups: SidebarCollectionGroup[];
-  favoriteRequests: HttpRequestEntity[];
-  ungroupedRequests: HttpClientViewState["config"]["requests"];
   environmentItems: SidebarEnvironmentItem[];
   selectedEnvironment: HttpEnvironmentEntity | null;
   environmentDraft: SidebarEnvironmentDraft | null;
   pendingRequestAction: { requestId: string; kind: "duplicate" | "delete" } | null;
   setActiveTab(tab: SidebarTab): void;
   setKeyword(keyword: string): void;
-  toggleHistoryGroup(groupKey: string): void;
   toggleCollectionGroup(groupKey: string): void;
   createRequest(collectionId?: string | null): void;
   createCollection(): void;
@@ -43,13 +35,11 @@ export interface SidebarController {
   deleteCollection(collectionId: string): void;
   createEnvironment(): void;
   selectRequest(requestId: string): void;
-  renameRequest(requestId: string): void;
+  renameRequest(requestId: string, name: string): void;
   duplicateRequest(requestId: string): void;
   deleteRequest(requestId: string): void;
-  toggleFavorite(requestId: string, favorite: boolean): void;
-  selectHistory(historyId: string): void;
-  promptSaveHistoryToCollection(historyId: string): void;
-  saveHistoryToCollection(historyId: string, collectionId: string): void;
+  exportCurl(requestId: string): void;
+  moveRequest(requestId: string, targetCollectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -102,43 +92,49 @@ export function useSidebarController(): SidebarController {
     [postMessage]
   );
 
-  const notifyToast = useCallback(
-    (message: string, kind: "info" | "success" | "warning" | "error" = "info", durationMs?: number) => {
-      postMessage({
-        type: "mxToast/notify",
-        payload: {
-          message,
-          kind,
-          copyText: message,
-          durationMs,
-        },
-      });
-    },
-    [postMessage]
-  );
+  useEffect(() => {
+    const handler = (event: MessageEvent<ExtensionToSidebarMessage>) => {
+      const data = event.data;
+      if (!data || typeof data !== "object") {
+        return;
+      }
+      if (data.type === "httpClientSidebar/state") {
+        setViewState(data.payload);
+        setHasHostState(true);
+        return;
+      }
+      if (data.type === "httpClientSidebar/curl") {
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          navigator.clipboard.writeText(data.payload.curl).catch(() => undefined);
+        }
+        window.__mxToastCenter?.push({
+          message: "cURL 已复制",
+          kind: "success",
+          copyText: data.payload.curl,
+        });
+        return;
+      }
+      if (data.type === "mxToast/show") {
+        window.__mxToastCenter?.push({
+          message: data.payload.message,
+          kind: data.payload.kind,
+          copyText: data.payload.copyText,
+        });
+      }
+    };
+
+    window.addEventListener("message", handler);
+    return () => {
+      window.removeEventListener("message", handler);
+    };
+  }, []);
 
   const setActiveTab = useCallback((tab: SidebarTab) => {
-    setUiState((current) => ({
-      ...current,
-      activeTab: tab,
-    }));
+    setUiState((current) => ({ ...current, activeTab: tab }));
   }, []);
 
   const setKeyword = useCallback((keyword: string) => {
-    setUiState((current) => ({
-      ...current,
-      keyword,
-    }));
-  }, []);
-
-  const toggleHistoryGroup = useCallback((groupKey: string) => {
-    setUiState((current) => ({
-      ...current,
-      expandedHistoryGroups: {
-        ...current.expandedHistoryGroups,
-        [groupKey]: !current.expandedHistoryGroups[groupKey],
-      },
-    }));
+    setUiState((current) => ({ ...current, keyword }));
   }, []);
 
   const toggleCollectionGroup = useCallback((groupKey: string) => {
@@ -152,75 +148,47 @@ export function useSidebarController(): SidebarController {
   }, []);
 
   const createRequest = useCallback(
-    (collectionId: string | null = null) => {
-      setUiState((current) => ({
-        ...current,
-        selectedHistoryId: null,
-      }));
+    (collectionId?: string | null) => {
       postMessage({
         type: "httpClientSidebar/createRequest",
-        payload: {
-          collectionId,
-        },
+        payload: { collectionId: collectionId ?? null },
       });
     },
     [postMessage]
   );
 
   const createCollection = useCallback(() => {
-    setActiveTab("collections");
     postMessage({ type: "httpClientSidebar/createCollection" });
-  }, [postMessage, setActiveTab]);
+  }, [postMessage]);
 
   const renameCollection = useCallback(
     (collectionId: string) => {
-      postMessage({
-        type: "httpClientSidebar/renameCollection",
-        payload: { collectionId },
-      });
+      postMessage({ type: "httpClientSidebar/renameCollection", payload: { collectionId } });
     },
     [postMessage]
   );
 
   const deleteCollection = useCallback(
     (collectionId: string) => {
-      postMessage({
-        type: "httpClientSidebar/deleteCollection",
-        payload: { collectionId },
-      });
+      postMessage({ type: "httpClientSidebar/deleteCollection", payload: { collectionId } });
     },
     [postMessage]
   );
 
   const createEnvironment = useCallback(() => {
-    setActiveTab("environments");
-    setUiState((current) => ({
-      ...current,
-      selectedEnvironmentId: null,
-    }));
     postMessage({ type: "httpClientSidebar/createEnvironment" });
-  }, [postMessage, setActiveTab]);
+  }, [postMessage]);
 
   const selectRequest = useCallback(
     (requestId: string) => {
-      setUiState((current) => ({
-        ...current,
-        selectedHistoryId: null,
-      }));
-      postMessage({
-        type: "httpClientSidebar/selectRequest",
-        payload: { requestId },
-      });
+      postMessage({ type: "httpClientSidebar/selectRequest", payload: { requestId } });
     },
     [postMessage]
   );
 
   const renameRequest = useCallback(
-    (requestId: string) => {
-      postMessage({
-        type: "httpClientSidebar/renameRequest",
-        payload: { requestId },
-      });
+    (requestId: string, name: string) => {
+      postMessage({ type: "httpClientSidebar/renameRequest", payload: { requestId, name } });
     },
     [postMessage]
   );
@@ -228,193 +196,99 @@ export function useSidebarController(): SidebarController {
   const duplicateRequest = useCallback(
     (requestId: string) => {
       setPendingRequestAction({ requestId, kind: "duplicate" });
-      postMessageAfterPaint({
-        type: "httpClientSidebar/duplicateRequest",
-        payload: { requestId },
-      });
+      postMessage({ type: "httpClientSidebar/duplicateRequest", payload: { requestId } });
+      setTimeout(() => setPendingRequestAction(null), 800);
     },
-    [postMessageAfterPaint]
+    [postMessage]
   );
 
   const deleteRequest = useCallback(
     (requestId: string) => {
       setPendingRequestAction({ requestId, kind: "delete" });
+      postMessage({ type: "httpClientSidebar/deleteRequest", payload: { requestId } });
+      setTimeout(() => setPendingRequestAction(null), 800);
+    },
+    [postMessage]
+  );
+
+  const exportCurl = useCallback(
+    (requestId: string) => {
+      postMessage({ type: "httpClientSidebar/exportCurl", payload: { requestId } });
+    },
+    [postMessage]
+  );
+
+  const moveRequest = useCallback(
+    (requestId: string, targetCollectionId: string) => {
+      const current = viewStateRef.current;
+      if (!current) {
+        return;
+      }
+      const lookup = current.config.collections
+        .flatMap((collection) => collection.requests.map((request) => ({ request, collection })))
+        .find((entry) => entry.request.id === requestId);
+      if (!lookup || lookup.collection.id === targetCollectionId) {
+        return;
+      }
+      const movedRequest: HttpRequestEntity = { ...lookup.request, updatedAt: new Date().toISOString() };
+      const nextState: HttpClientViewState = {
+        ...current,
+        config: {
+          ...current.config,
+          collections: current.config.collections.map((collection) => {
+            if (collection.id === lookup.collection.id) {
+              return { ...collection, requests: collection.requests.filter((item) => item.id !== requestId) };
+            }
+            if (collection.id === targetCollectionId) {
+              return { ...collection, requests: [movedRequest, ...collection.requests] };
+            }
+            return collection;
+          }),
+        },
+      };
+      setViewState(nextState);
       postMessageAfterPaint({
-        type: "httpClientSidebar/deleteRequest",
-        payload: { requestId },
+        type: "httpClientSidebar/moveRequest",
+        payload: { requestId, targetCollectionId },
+      });
+      const targetCollection = nextState.config.collections.find((collection) => collection.id === targetCollectionId);
+      window.__mxToastCenter?.push({
+        message: `已移至 ${targetCollection?.name ?? "目标集合"}`,
+        kind: "success",
+        copyText: targetCollection?.name ?? "",
       });
     },
     [postMessageAfterPaint]
   );
 
-  const toggleFavorite = useCallback(
-    (requestId: string, favorite: boolean) => {
-      postMessage({
-        type: "httpClientSidebar/toggleFavorite",
-        payload: { requestId, favorite },
-      });
-    },
-    [postMessage]
-  );
-
-  const selectHistory = useCallback(
-    (historyId: string) => {
-      setUiState((current) => ({
-        ...current,
-        selectedHistoryId: historyId,
-      }));
-      postMessage({
-        type: "httpClientSidebar/selectHistory",
-        payload: { historyId },
-      });
-    },
-    [postMessage]
-  );
-
-  const saveHistoryToCollection = useCallback(
-    (historyId: string, collectionId: string) => {
-      postMessage({
-        type: "httpClientSidebar/saveHistoryToCollection",
-        payload: { historyId, collectionId },
-      });
-    },
-    [postMessage]
-  );
-
-  const promptSaveHistoryToCollection = useCallback(
-    (historyId: string) => {
-      postMessage({
-        type: "httpClientSidebar/promptSaveHistoryToCollection",
-        payload: { historyId },
-      });
-    },
-    [postMessage]
-  );
-
   const selectEnvironment = useCallback(
     (environmentId: string | null) => {
-      setUiState((current) => ({
-        ...current,
-        selectedEnvironmentId: environmentId ?? current.selectedEnvironmentId,
-      }));
-      postMessage({
-        type: "httpClientSidebar/selectEnvironment",
-        payload: { environmentId },
-      });
+      postMessage({ type: "httpClientSidebar/selectEnvironment", payload: { environmentId } });
     },
     [postMessage]
   );
 
-  useEffect(() => {
-    postMessage({ type: "httpClientSidebar/init" });
+  const setEnvironmentDraftName = useCallback((name: string) => {
+    setEnvironmentDraft((current) => (current ? { ...current, name, dirty: true } : current));
+  }, []);
 
-    const onMessage = (event: MessageEvent) => {
-      const payload = event.data as ExtensionToSidebarMessage | undefined;
-      if (!payload || typeof payload !== "object" || !("type" in payload)) {
-        return;
-      }
-
-      if (payload.type === "mxToast/show") {
-        window.__mxToastCenter?.push(payload.payload);
-        return;
-      }
-
-      if (payload.type !== "httpClientSidebar/state") {
-        return;
-      }
-
-      setHasHostState(true);
-      setPendingRequestAction(null);
-      viewStateRef.current = payload.payload;
-      setViewState(payload.payload);
-      setUiState((current) => {
-        if (current.selectedHistoryId === payload.payload.selectedHistoryId) {
+  const updateEnvironmentVariable = useCallback(
+    (id: string, field: "key" | "value", value: string) => {
+      setEnvironmentDraft((current) => {
+        if (!current) {
           return current;
         }
         return {
           ...current,
-          selectedHistoryId: payload.payload.selectedHistoryId,
+          dirty: true,
+          variables: current.variables.map((variable) =>
+            variable.id === id ? { ...variable, [field]: value } : variable
+          ),
         };
       });
-    };
-
-    window.addEventListener("message", onMessage);
-    return () => {
-      window.removeEventListener("message", onMessage);
-    };
-  }, [postMessage]);
-
-  useEffect(() => {
-    if (!viewState) {
-      return;
-    }
-    setUiState((current) => {
-      const hasCurrentSelection =
-        current.selectedEnvironmentId !== null &&
-        viewState.config.environments.some((environment) => environment.id === current.selectedEnvironmentId);
-      if (hasCurrentSelection) {
-        return current;
-      }
-      const fallbackId = viewState.activeEnvironmentId ?? viewState.config.environments[0]?.id ?? null;
-      if (fallbackId === current.selectedEnvironmentId) {
-        return current;
-      }
-      return {
-        ...current,
-        selectedEnvironmentId: fallbackId,
-      };
-    });
-  }, [viewState]);
-
-  const selectedEnvironment = useMemo(() => {
-    if (!viewState) {
-      return null;
-    }
-    const selectedId = uiState.selectedEnvironmentId ?? viewState.activeEnvironmentId ?? viewState.config.environments[0]?.id ?? null;
-    if (!selectedId) {
-      return null;
-    }
-    return viewState.config.environments.find((environment) => environment.id === selectedId) ?? null;
-  }, [uiState.selectedEnvironmentId, viewState]);
-
-  useEffect(() => {
-    if (!selectedEnvironment) {
-      setEnvironmentDraft(null);
-      return;
-    }
-    setEnvironmentDraft({
-      environmentId: selectedEnvironment.id,
-      name: selectedEnvironment.name,
-      variables: Object.entries(selectedEnvironment.variables).map(([key, value]) => createEnvironmentRow(key, value)),
-      dirty: false,
-    });
-  }, [createEnvironmentRow, selectedEnvironment?.id, selectedEnvironment?.updatedAt]);
-
-  const setEnvironmentDraftName = useCallback((name: string) => {
-    setEnvironmentDraft((current) => {
-      if (!current) {
-        return current;
-      }
-      return {
-        ...current,
-        name,
-        dirty: true,
-      };
-    });
-  }, []);
-
-  const updateEnvironmentVariable = useCallback((id: string, field: "key" | "value", value: string) => {
-    setEnvironmentDraft((current) => {
-      if (!current) {
-        return current;
-      }
-      return {
-        ...current,
-        dirty: true,
-        variables: current.variables.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
-      };
-    });
-  }, []);
+    },
+    []
+  );
 
   const addEnvironmentVariable = useCallback(() => {
     setEnvironmentDraft((current) => {
@@ -437,100 +311,119 @@ export function useSidebarController(): SidebarController {
       return {
         ...current,
         dirty: true,
-        variables: current.variables.filter((item) => item.id !== id),
+        variables: current.variables.filter((variable) => variable.id !== id),
       };
     });
   }, []);
 
   const saveEnvironment = useCallback(() => {
-    if (!selectedEnvironment || !environmentDraft) {
-      notifyToast("没有可保存的环境", "warning");
+    const current = environmentDraft;
+    if (!current) {
       return;
     }
-    const variables = Object.fromEntries(
-      environmentDraft.variables
-        .map((item) => [item.key.trim(), item.value] as const)
-        .filter(([key]) => key.length > 0)
-    );
+    const variables: Record<string, string> = {};
+    for (const variable of current.variables) {
+      if (!variable.key.trim()) {
+        continue;
+      }
+      variables[variable.key.trim()] = variable.value;
+    }
     postMessage({
       type: "httpClientSidebar/saveEnvironment",
       payload: {
         environment: {
-          ...selectedEnvironment,
-          name: environmentDraft.name,
+          id: current.environmentId,
+          name: current.name,
           variables,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         },
       },
     });
-  }, [environmentDraft, notifyToast, postMessage, selectedEnvironment]);
+    setEnvironmentDraft((draft) => (draft ? { ...draft, dirty: false } : draft));
+  }, [environmentDraft, postMessage]);
 
   const deleteEnvironment = useCallback(() => {
-    if (!selectedEnvironment) {
-      notifyToast("请选择一个环境", "warning");
+    const current = environmentDraft;
+    if (!current) {
       return;
     }
     postMessage({
       type: "httpClientSidebar/deleteEnvironment",
-      payload: { environmentId: selectedEnvironment.id },
+      payload: { environmentId: current.environmentId },
     });
-  }, [notifyToast, postMessage, selectedEnvironment]);
+  }, [environmentDraft, postMessage]);
 
-  const historyGroups = useMemo(() => {
+  useEffect(() => {
     if (!viewState) {
-      return [];
+      setEnvironmentDraft(null);
+      return;
     }
-
-    return buildHistoryGroups(viewState, uiState.keyword, uiState.expandedHistoryGroups, uiState.selectedHistoryId);
-  }, [uiState.expandedHistoryGroups, uiState.keyword, uiState.selectedHistoryId, viewState]);
+    const activeId = viewState.activeEnvironmentId;
+    const env = viewState.config.environments.find((item) => item.id === activeId);
+    if (!env) {
+      setEnvironmentDraft(null);
+      return;
+    }
+    setEnvironmentDraft((current) => {
+      if (current && current.environmentId === env.id && !current.dirty) {
+        return current;
+      }
+      return {
+        environmentId: env.id,
+        name: env.name,
+        variables: Object.entries(env.variables).map(([key, value]) => createEnvironmentRow(key, value)),
+        dirty: false,
+      };
+    });
+  }, [viewState, createEnvironmentRow]);
 
   const collectionGroups = useMemo(() => {
     if (!viewState) {
-      return [];
+      return [] as SidebarCollectionGroup[];
     }
+    const draft = viewState.draft && !viewState.config.collections.some((collection) => collection.requests.some((request) => request.id === viewState.draft?.id))
+      ? viewState.draft
+      : null;
+    return buildCollectionGroups(viewState.config, uiState.keyword, draft, uiState.expandedCollectionGroups);
+  }, [uiState.keyword, uiState.expandedCollectionGroups, viewState]);
 
-    return buildCollectionGroups(viewState.config, uiState.keyword, viewState.draft, uiState.expandedCollectionGroups);
-  }, [uiState.expandedCollectionGroups, uiState.keyword, viewState]);
-
-  const favoriteRequests = useMemo(() => {
+  const environmentItems = useMemo<SidebarEnvironmentItem[]>(() => {
     if (!viewState) {
       return [];
     }
-
-    return buildFavoriteRequests(viewState.config, uiState.keyword, viewState.draft);
-  }, [uiState.keyword, viewState]);
-
-  const ungroupedRequests = useMemo(() => {
-    if (!viewState) {
-      return [];
-    }
-
-    return buildUngroupedRequests(viewState.config, uiState.keyword, viewState.draft);
-  }, [uiState.keyword, viewState]);
-
-  const environmentItems = useMemo(() => {
-    if (!viewState) {
-      return [];
-    }
-
     return buildEnvironmentItems(viewState, uiState.keyword);
   }, [uiState.keyword, viewState]);
+
+  const selectedEnvironment = useMemo(() => {
+    if (!viewState) {
+      return null;
+    }
+    return viewState.config.environments.find((item) => item.id === viewState.activeEnvironmentId) ?? null;
+  }, [viewState]);
+
+  // 把 moveRequest / selectRequest 暴露到 window, 让 SidebarView 内部使用
+  useEffect(() => {
+    window.__mxSidebarMoveRequest = (requestId, targetCollectionId) => moveRequest(requestId, targetCollectionId);
+    window.__mxSidebarSelectRequest = (requestId) => selectRequest(requestId);
+    return () => {
+      delete window.__mxSidebarMoveRequest;
+      delete window.__mxSidebarSelectRequest;
+    };
+  }, [moveRequest, selectRequest]);
 
   return {
     buildId: bootstrap.buildId,
     viewState,
     uiState,
     hasHostState,
-    historyGroups,
     collectionGroups,
-    favoriteRequests,
-    ungroupedRequests,
     environmentItems,
     selectedEnvironment,
     environmentDraft,
     pendingRequestAction,
     setActiveTab,
     setKeyword,
-    toggleHistoryGroup,
     toggleCollectionGroup,
     createRequest,
     createCollection,
@@ -541,10 +434,8 @@ export function useSidebarController(): SidebarController {
     renameRequest,
     duplicateRequest,
     deleteRequest,
-    toggleFavorite,
-    selectHistory,
-    promptSaveHistoryToCollection,
-    saveHistoryToCollection,
+    exportCurl,
+    moveRequest,
     selectEnvironment,
     setEnvironmentDraftName,
     updateEnvironmentVariable,

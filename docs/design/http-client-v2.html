@@ -1,0 +1,3015 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTTP Client · 设计稿 v2</title>
+  <style>
+    /* ============================================================
+       Tokens - 主题变量 (dark + light)
+       ============================================================ */
+    :root[data-theme="dark"] {
+      --bg: #1e1e1e;
+      --surface: #252526;
+      --surface-2: #2d2d30;
+      --surface-3: #333337;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --text: #e6e6e6;
+      --text-strong: #ffffff;
+      --muted: #9b9b9b;
+      --soft: #6a6a6a;
+      --primary: #0e7ad1;
+      --primary-hover: #1188e6;
+      --primary-soft: rgba(14, 122, 209, 0.18);
+      --focus: #007fd4;
+      --success: #73c991;
+      --warning: #d7ba7d;
+      --danger: #f48771;
+      --info: #75beff;
+      --get: #73c991;
+      --post: #75beff;
+      --put: #d7ba7d;
+      --delete: #f48771;
+      --patch: #c586c0;
+      --json-key: #9cdcfe;
+      --json-string: #ce9178;
+      --json-number: #b5cea8;
+      --json-bool: #569cd6;
+      --json-null: #c586c0;
+      --shadow: 0 4px 18px rgba(0, 0, 0, 0.32);
+      --scrim: rgba(0, 0, 0, 0.5);
+    }
+    :root[data-theme="light"] {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --surface-2: #f3f3f3;
+      --surface-3: #e8e8e8;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.16);
+      --text: #1f1f1f;
+      --text-strong: #000000;
+      --muted: #6e6e6e;
+      --soft: #9a9a9a;
+      --primary: #0066cc;
+      --primary-hover: #0055aa;
+      --primary-soft: rgba(0, 102, 204, 0.12);
+      --focus: #0066cc;
+      --success: #2c8a4a;
+      --warning: #b07a1d;
+      --danger: #d04424;
+      --info: #0066cc;
+      --get: #2c8a4a;
+      --post: #0066cc;
+      --put: #b07a1d;
+      --delete: #d04424;
+      --patch: #8a3ec0;
+      --json-key: #0066cc;
+      --json-string: #a31515;
+      --json-number: #098658;
+      --json-bool: #0066cc;
+      --json-null: #8a3ec0;
+      --shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+      --scrim: rgba(0, 0, 0, 0.32);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.5 -apple-system, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      overflow: hidden;
+    }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 3px;
+      font-family: inherit; font-size: 11px;
+      min-width: 16px; text-align: center;
+    }
+
+    /* ============================================================
+       布局
+       ============================================================ */
+    .app {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1.6fr) minmax(0, 1fr);
+      gap: 8px;
+      width: 100vw;
+      height: 100vh;
+      padding: 8px;
+      background: var(--bg);
+    }
+    .pane {
+      display: flex; flex-direction: column; gap: 8px;
+      min-width: 0; min-height: 0;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex; flex-direction: column; gap: 12px;
+      min-width: 0; min-height: 0;
+    }
+    .card-fill { flex: 1; min-height: 0; }
+
+    /* ============================================================
+       Sidebar
+       ============================================================ */
+    .sidebar-header { gap: 10px; padding: 14px; }
+    .brand {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .brand-name { font-size: 12px; font-weight: 600; color: var(--text-strong); letter-spacing: 0.02em; }
+    .theme-toggle, .icon-btn {
+      width: 26px; height: 26px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--muted);
+      font-size: 13px;
+    }
+    .theme-toggle:hover, .icon-btn:hover { color: var(--text); background: var(--surface-3); }
+
+    .btn-primary {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 32px; padding: 0 14px;
+      background: var(--primary); color: #fff;
+      border: none; border-radius: 4px;
+      font-weight: 600;
+      transition: background-color 120ms ease, transform 120ms ease;
+    }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-danger {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 32px; padding: 0 14px;
+      background: var(--danger); color: #fff;
+      border: none; border-radius: 4px;
+      font-weight: 600;
+      transition: background-color 120ms ease, transform 120ms ease;
+    }
+    .btn-danger:hover { background: color-mix(in srgb, var(--danger) 88%, #000 12%); }
+    .btn-danger:active { transform: scale(0.98); }
+    .btn-primary:active { transform: scale(0.98); }
+
+    .btn-secondary {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 26px; padding: 0 10px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      font-weight: 500;
+    }
+    .btn-secondary:hover { background: var(--surface-3); border-color: var(--border-strong); }
+    .btn-secondary.active { background: var(--primary-soft); border-color: var(--primary); color: var(--text-strong); }
+
+    .btn-ghost {
+      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+      height: 26px; padding: 0 8px;
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent; border-radius: 4px;
+      font-weight: 500;
+    }
+    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+
+    .tabs {
+      display: flex; align-items: center; gap: 2px;
+      padding: 2px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .tab-btn {
+      flex: 1; height: 24px; padding: 0 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; color: var(--muted);
+      border: none; border-radius: 3px;
+      font-weight: 500; font-size: 12px;
+    }
+    .tab-btn.active { background: var(--surface); color: var(--text-strong); box-shadow: 0 0 0 1px var(--border); }
+    .tab-btn:hover:not(.active) { color: var(--text); }
+
+    .search {
+      position: relative;
+      display: flex; align-items: center;
+    }
+    .search input {
+      width: 100%; height: 28px; padding: 0 28px 0 10px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+    }
+    .search input:focus { border-color: var(--focus); }
+    .search .clear {
+      position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+      width: 18px; height: 18px;
+      display: none; align-items: center; justify-content: center;
+      background: transparent; border: none; color: var(--muted); border-radius: 3px;
+      font-size: 14px; line-height: 1;
+    }
+    .search .clear:hover { background: var(--surface-3); color: var(--text); }
+    .search.has-value .clear { display: inline-flex; }
+
+    .section-label {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 4px;
+      color: var(--muted); font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .section-label .add-btn {
+      background: transparent; border: none; color: var(--muted);
+      font-size: 14px; cursor: pointer; padding: 0 4px;
+    }
+    .section-label .add-btn:hover { color: var(--text); }
+
+    .scroll-list {
+      flex: 1; overflow: auto;
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 0 2px;
+      min-height: 0;
+    }
+
+    /* 历史列表 */
+    .history-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      text-align: left;
+      color: var(--text);
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .history-item:hover { background: var(--surface-2); border-color: var(--border); }
+    .history-item.active { background: var(--primary-soft); border-color: var(--primary); }
+    .history-item .meta {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10px; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .history-item .meta .status.ok { color: var(--success); font-weight: 700; }
+    .history-item .meta .status.err { color: var(--danger); font-weight: 700; }
+    .history-item .meta .status.warn { color: var(--warning); font-weight: 700; }
+    .history-item .url {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 12px;
+    }
+
+    /* 集合列表 */
+    .collection {
+      display: flex; flex-direction: column;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2);
+      overflow: hidden;
+    }
+    .collection-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-weight: 600; font-size: 12px;
+      color: var(--text);
+    }
+    .collection-header:hover { background: var(--surface-3); }
+    .collection-header .chevron { font-size: 10px; color: var(--muted); transition: transform 120ms ease; }
+    .collection.collapsed .chevron { transform: rotate(-90deg); }
+    .collection-header .count { color: var(--muted); font-weight: 500; font-size: 11px; }
+    .collection-header .spacer { flex: 1; }
+    .collection-body {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 4px; min-height: 28px;
+      border-radius: 4px;
+      transition: background-color 120ms ease, outline-color 120ms ease;
+    }
+    .collection-body.drop-target {
+      background: var(--primary-soft);
+      outline: 2px dashed var(--primary);
+      outline-offset: -2px;
+    }
+    .collection.collapsed .collection-body { display: none; }
+    .req-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+      color: var(--text);
+      transition: background-color 120ms ease;
+    }
+    .req-item:active { cursor: grabbing; }
+    .req-item:hover { background: var(--surface); }
+    .req-item.active { background: var(--primary-soft); color: var(--text-strong); }
+    .req-item.dragging { opacity: 0.4; }
+    .req-item .req-main {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .req-item .req-name {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 12px;
+    }
+    .req-item .req-meta {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 10px; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .req-item .req-meta .status.ok { color: var(--success); font-weight: 700; }
+    .req-item .req-meta .status.err { color: var(--danger); font-weight: 700; }
+    .req-item .req-meta .status.warn { color: var(--warning); font-weight: 700; }
+    .req-empty {
+      padding: 14px 10px; text-align: center;
+      color: var(--muted); font-size: 11px; line-height: 1.5;
+      border: 1px dashed var(--border); border-radius: 4px;
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .req-empty.drop-target {
+      background: var(--primary-soft);
+      border-color: var(--primary);
+      border-style: dashed;
+    }
+
+    /* 右键菜单 */
+    .context-menu {
+      position: fixed;
+      z-index: 200;
+      min-width: 180px;
+      padding: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      box-shadow: var(--shadow);
+      animation: contextMenuIn 120ms ease;
+    }
+    @keyframes contextMenuIn { from { transform: scale(0.96); opacity: 0; } }
+    .context-menu .ctx-item {
+      width: 100%;
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px;
+      border-radius: 3px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .context-menu .ctx-item:hover:not(.disabled) { background: var(--surface-2); }
+    .context-menu .ctx-item.danger { color: var(--danger); }
+    .context-menu .ctx-item.disabled { opacity: 0.4; cursor: default; }
+    .context-menu .ctx-item .icon { width: 14px; text-align: center; opacity: 0.85; }
+    .context-menu .ctx-divider {
+      height: 1px; background: var(--border); margin: 4px 0;
+      pointer-events: none;
+    }
+
+    /* 环境列表 */
+    .env-card {
+      display: flex; flex-direction: column;
+      padding: 10px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2);
+      gap: 8px;
+    }
+    .env-card.active { border-color: var(--primary); background: var(--primary-soft); }
+    .env-card-head {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .env-card-head .env-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--success);
+    }
+    .env-card-head .env-name { font-weight: 600; font-size: 13px; }
+    .env-card-head .spacer { flex: 1; }
+    .env-card .var-row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+      font-size: 11px;
+    }
+    .env-card .var-row .k { color: var(--muted); font-family: "Cascadia Code", monospace; }
+    .env-card .var-row .v { font-family: "Cascadia Code", monospace; word-break: break-all; }
+    .env-card .actions { display: flex; gap: 4px; }
+
+    /* Method pill - 含形状 (色盲可达性) */
+    .method-pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 48px; height: 20px; padding: 0 6px 0 4px;
+      border-radius: 3px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+    .method-pill .shape { width: 7px; height: 7px; margin-right: 6px; flex-shrink: 0; }
+    .method-pill .shape.circle { border-radius: 50%; }
+    .method-pill .shape.diamond { transform: rotate(45deg); width: 5px; height: 5px; }
+    .method-pill .shape.cross { position: relative; background: transparent; }
+    .method-pill .shape.cross::before,
+    .method-pill .shape.cross::after { content: ""; position: absolute; background: currentColor; }
+    .method-pill .shape.cross::before { top: 50%; left: 0; right: 0; height: 1.5px; transform: translateY(-50%); }
+    .method-pill .shape.cross::after { left: 50%; top: 0; bottom: 0; width: 1.5px; transform: translateX(-50%); }
+    .method-pill .shape.bolt { position: relative; background: transparent; }
+    .method-pill .shape.bolt::before {
+      content: ""; position: absolute; inset: 0;
+      background: currentColor;
+      clip-path: polygon(50% 0, 100% 50%, 55% 50%, 50% 100%, 0 50%, 45% 50%);
+    }
+    .method-pill .shape.triangle {
+      width: 0; height: 0; background: transparent;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-bottom: 6px solid currentColor;
+    }
+
+    .method-get { color: var(--get); background: color-mix(in srgb, var(--get) 16%, transparent); }
+    .method-get .shape { background: var(--get); }
+    .method-post { color: var(--post); background: color-mix(in srgb, var(--post) 16%, transparent); }
+    .method-post .shape { border-bottom: 6px solid var(--post); }
+    .method-put { color: var(--put); background: color-mix(in srgb, var(--put) 16%, transparent); }
+    .method-put .shape { background: var(--put); }
+    .method-delete { color: var(--delete); background: color-mix(in srgb, var(--delete) 16%, transparent); }
+    .method-patch { color: var(--patch); background: color-mix(in srgb, var(--patch) 16%, transparent); }
+    .method-patch .shape { color: var(--patch); }
+
+    /* ============================================================
+       Editor
+       ============================================================ */
+    .toolbar { gap: 10px; }
+    .url-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .method-select {
+      height: 36px;
+      padding: 0 10px 0 8px;
+      border: 1px solid var(--border-strong); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+      font-weight: 600;
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+    .method-select:focus { border-color: var(--focus); }
+    .method-select option { background: var(--surface); color: var(--text); }
+
+    .url-input {
+      height: 36px;
+      padding: 0 12px;
+      border: 1px solid var(--border-strong); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+      font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+      font-size: 12.5px;
+    }
+    .url-input:focus { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+
+    .send-btn {
+      position: relative;
+      height: 36px; min-width: 88px; padding: 0 18px;
+      background: var(--primary); color: #fff;
+      border: none; border-radius: 4px;
+      font-weight: 600;
+      transition: background-color 120ms ease, transform 120ms ease;
+    }
+    .send-btn:hover { background: var(--primary-hover); }
+    .send-btn:active { transform: scale(0.98); }
+    .send-btn.dirty::after {
+      content: ""; position: absolute; top: -3px; right: -3px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--warning);
+      box-shadow: 0 0 0 2px var(--surface);
+    }
+    .send-btn.sending {
+      background: var(--surface-3); color: var(--text);
+      pointer-events: none;
+    }
+    .send-btn .spin {
+      display: none;
+      width: 12px; height: 12px;
+      border: 2px solid currentColor; border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 6px;
+      vertical-align: -2px;
+    }
+    .send-btn.sending .spin { display: inline-block; }
+    .send-btn .label-default { display: inline; }
+    .send-btn.sending .label-default { display: none; }
+    .send-btn .label-sending { display: none; }
+    .send-btn.sending .label-sending { display: inline; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .cancel-btn {
+      display: none;
+      height: 36px; padding: 0 12px;
+      background: var(--surface-2); color: var(--danger);
+      border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent); border-radius: 4px;
+      font-weight: 600;
+    }
+    .cancel-btn:hover { background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); }
+    .send-btn.sending + .cancel-btn { display: inline-flex; align-items: center; }
+
+    .secondary-row {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .env-select {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 26px; padding: 0 10px 0 8px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .env-select:hover { background: var(--surface-3); }
+    .env-select .env-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--success);
+    }
+    .secondary-row .spacer { flex: 1; }
+    .secondary-row .dirty-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 22px; padding: 0 8px;
+      background: color-mix(in srgb, var(--warning) 16%, transparent);
+      color: var(--warning);
+      border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+      border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+
+    .editor-section { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
+    .section-title-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-title-row h3 {
+      margin: 0;
+      font-size: 12px; font-weight: 600;
+      color: var(--text-strong);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+
+    .req-tab-content { padding: 12px 14px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+    /* KV editor */
+    .kv-editor {
+      display: flex; flex-direction: column; gap: 4px;
+      min-height: 0; flex: 1; overflow: auto;
+    }
+    .kv-header, .kv-row {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr) 32px;
+      gap: 6px;
+      align-items: center;
+    }
+    .kv-header {
+      padding: 0 8px;
+      color: var(--muted); font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      position: sticky; top: 0; background: var(--surface); z-index: 1;
+    }
+    .kv-row {
+      padding: 4px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2);
+    }
+    .kv-row.disabled { opacity: 0.45; }
+    .kv-row input[type="text"] {
+      height: 28px; padding: 0 8px;
+      border: 1px solid var(--border); border-radius: 3px;
+      background: var(--bg); color: var(--text);
+      outline: none;
+      font-family: "Cascadia Code", "JetBrains Mono", monospace;
+      font-size: 12px;
+    }
+    .kv-row input[type="text"]:focus { border-color: var(--focus); }
+    .kv-row .del-btn {
+      width: 24px; height: 24px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: none; color: var(--soft);
+      border-radius: 3px;
+    }
+    .kv-row .del-btn:hover { background: var(--surface-3); color: var(--danger); }
+    .kv-row .check-cell { display: flex; align-items: center; justify-content: center; }
+    .kv-row input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--primary); }
+
+    .add-row-btn {
+      align-self: flex-start;
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 26px; padding: 0 10px;
+      background: transparent; color: var(--muted);
+      border: 1px dashed var(--border-strong); border-radius: 4px;
+      font-size: 12px;
+    }
+    .add-row-btn:hover { color: var(--text); border-color: var(--primary); border-style: solid; }
+
+    /* Body 编辑器 */
+    .body-editor {
+      display: flex; flex-direction: column; gap: 10px;
+      flex: 1; min-height: 0;
+    }
+    .body-toolbar {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .body-toolbar select {
+      height: 26px; padding: 0 8px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+    }
+    .body-textarea {
+      flex: 1; min-height: 200px;
+      padding: 10px 12px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--bg); color: var(--text);
+      outline: none;
+      font-family: "Cascadia Code", "JetBrains Mono", monospace;
+      font-size: 12.5px; line-height: 1.6;
+      resize: none;
+    }
+    .body-textarea:focus { border-color: var(--focus); }
+
+    /* ============================================================
+       Response
+       ============================================================ */
+    .resp-card { padding: 0; overflow: hidden; }
+    .resp-header {
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .resp-status-row {
+      display: flex; align-items: baseline; gap: 12px;
+      flex-wrap: wrap;
+    }
+    .resp-status-code {
+      font-size: 28px; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+    .resp-status-code.ok { color: var(--success); }
+    .resp-status-code.warn { color: var(--warning); }
+    .resp-status-code.err { color: var(--danger); }
+    .resp-status-text { font-size: 13px; color: var(--muted); }
+
+    .resp-meta-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      font-size: 11px;
+    }
+    .resp-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 22px; padding: 0 8px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 999px;
+      font-weight: 500;
+      cursor: default;
+    }
+    .resp-chip.size-big { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 32%, transparent); background: color-mix(in srgb, var(--warning) 8%, transparent); }
+    .resp-chip.size-huge { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, transparent); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+
+    .resp-tabs {
+      display: flex; align-items: center; gap: 2px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .resp-tab {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 32px; padding: 0 12px;
+      background: transparent; color: var(--muted);
+      border: none;
+      font-size: 12px; font-weight: 500;
+    }
+    .resp-tab:hover:not(.active) { color: var(--text); }
+    .resp-tab.active { color: var(--text-strong); }
+    .resp-tab.active::after {
+      content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+      height: 2px; background: var(--primary);
+      border-radius: 2px 2px 0 0;
+    }
+
+    .resp-body {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--surface);
+    }
+    .resp-toolbar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .resp-search { position: relative; flex: 1; }
+    .resp-search input {
+      width: 100%; height: 26px; padding: 0 10px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none; font-size: 12px;
+    }
+    .resp-search input:focus { border-color: var(--focus); }
+
+    .resp-content {
+      flex: 1; overflow: auto;
+      padding: 12px 16px;
+      background: var(--bg);
+      position: relative;
+    }
+    .resp-copy-btn {
+      position: absolute; top: 8px; right: 12px;
+      width: 26px; height: 26px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--border-strong); border-radius: 4px;
+      background: var(--surface); color: var(--muted);
+      z-index: 1;
+    }
+    .resp-copy-btn:hover { color: var(--text); background: var(--surface-3); }
+
+    /* JSON viewer */
+    .json-view { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.6; }
+    .json-view .line { display: flex; align-items: flex-start; gap: 0; padding-left: 0; }
+    .json-view .key { color: var(--json-key); }
+    .json-view .string { color: var(--json-string); }
+    .json-view .number { color: var(--json-number); }
+    .json-view .boolean { color: var(--json-bool); }
+    .json-view .null { color: var(--json-null); }
+    .json-view .toggle {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px;
+      color: var(--muted); user-select: none;
+      cursor: pointer; flex-shrink: 0;
+      margin-right: 2px;
+    }
+    .json-view .toggle::before { content: "▾"; font-size: 10px; }
+    .json-view .toggle.collapsed::before { content: "▸"; }
+    .json-view .collapsed-content { display: none; }
+    .json-view mark {
+      background: color-mix(in srgb, var(--warning) 35%, transparent);
+      color: inherit;
+      padding: 0 1px; border-radius: 2px;
+      font-weight: 600;
+    }
+
+    /* Empty / loading state */
+    .empty-state {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 10px;
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .empty-state .icon {
+      width: 56px; height: 56px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 14px;
+      background: var(--surface-2);
+      color: var(--soft);
+      font-size: 28px;
+    }
+    .empty-state .title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .empty-state .hint { font-size: 12px; display: flex; gap: 4px; align-items: center; }
+    .empty-state .sub-hint { font-size: 11px; opacity: 0.7; }
+
+    .skeleton {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 16px;
+    }
+    .skeleton .bar {
+      height: 10px; border-radius: 4px;
+      background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
+      background-size: 200% 100%;
+      animation: shimmer 1.4s linear infinite;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    /* Header / meta tables */
+    .header-table { display: grid; gap: 4px; }
+    .header-row {
+      display: grid;
+      grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) 60px;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 4px;
+      font-size: 12px;
+    }
+    .header-row.important {
+      border-color: color-mix(in srgb, var(--info) 32%, transparent);
+      background: color-mix(in srgb, var(--info) 6%, var(--surface-2));
+    }
+    .header-row .key { color: var(--text); font-weight: 500; }
+    .header-row .val { font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+    .header-row .val.code { color: var(--text); }
+    .header-row .copy {
+      height: 22px; padding: 0 8px;
+      background: transparent; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 3px;
+      font-size: 11px;
+    }
+    .header-row .copy:hover { background: var(--surface-3); color: var(--text); }
+
+    .meta-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .meta-item {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 8px 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .meta-item .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+    .meta-item .value { font-size: 12px; color: var(--text); font-family: "Cascadia Code", monospace; word-break: break-all; }
+
+    /* 压测结果 */
+    .load-config {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    }
+    .load-config .field-block {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .load-config label {
+      font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+    }
+    .load-config input {
+      height: 30px; padding: 0 10px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+      font-variant-numeric: tabular-nums;
+    }
+    .load-config input:focus { border-color: var(--focus); }
+
+    .metrics-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+      margin-top: 12px;
+    }
+    .metric-card {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 8px 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 4px;
+    }
+    .metric-card .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+    .metric-card .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .metric-card .value.ok { color: var(--success); }
+    .metric-card .value.err { color: var(--danger); }
+
+    .progress-bar {
+      width: 100%; height: 6px;
+      background: var(--surface-2); border-radius: 3px; overflow: hidden;
+      margin: 8px 0;
+    }
+    .progress-bar > span {
+      display: block; height: 100%;
+      background: var(--primary);
+      transition: width 120ms linear;
+    }
+    .progress-text {
+      font-size: 11px; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      display: flex; justify-content: space-between;
+    }
+
+    /* Modal / Dialog */
+    .modal-layer {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+      background: var(--scrim);
+      backdrop-filter: blur(6px);
+      animation: fadeIn 160ms ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; } }
+    .modal {
+      display: flex; flex-direction: column; gap: 12px;
+      width: min(560px, 100%);
+      max-height: calc(100vh - 48px);
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      box-shadow: var(--shadow);
+      animation: slideUp 200ms ease;
+    }
+    .modal.wide { width: min(720px, 100%); }
+    @keyframes slideUp { from { transform: translateY(8px); opacity: 0; } }
+    .modal-head {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px;
+    }
+    .modal-head h3 {
+      margin: 0;
+      font-size: 14px; font-weight: 600;
+    }
+    .modal-head p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+    .modal-body { flex: 1; overflow: auto; min-height: 0; }
+    .modal-foot {
+      display: flex; justify-content: flex-end; gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .field-block {
+      display: flex; flex-direction: column; gap: 4px;
+      margin-bottom: 10px;
+    }
+    .field-block > label {
+      font-size: 11px; color: var(--muted); font-weight: 600;
+    }
+    .field-block input,
+    .field-block textarea,
+    .field-block select {
+      height: 30px; padding: 0 10px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text);
+      outline: none;
+      font-family: "Cascadia Code", "JetBrains Mono", monospace;
+      font-size: 12px;
+    }
+    .field-block textarea { min-height: 120px; padding: 8px 10px; line-height: 1.5; height: auto; resize: vertical; }
+
+    /* 帮助弹窗 */
+    .help-shortcut-grid {
+      display: grid; gap: 4px;
+    }
+    .help-shortcut-row {
+      display: grid; grid-template-columns: 160px 1fr;
+      gap: 12px; align-items: center;
+      padding: 6px 0;
+      font-size: 12px;
+    }
+    .help-shortcut-row .keys { display: flex; gap: 4px; align-items: center; }
+    .help-shortcut-row .desc { color: var(--muted); }
+
+    /* Dropdown menu */
+    .dropdown {
+      position: relative;
+    }
+    .dropdown-menu {
+      position: absolute; top: calc(100% + 4px); left: 0;
+      min-width: 200px;
+      padding: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      box-shadow: var(--shadow);
+      z-index: 50;
+      display: none; flex-direction: column; gap: 1px;
+    }
+    .dropdown.open .dropdown-menu { display: flex; }
+    .dropdown-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px;
+      border-radius: 3px;
+      background: transparent; border: none; color: var(--text);
+      font-size: 12px; text-align: left;
+    }
+    .dropdown-item:hover { background: var(--surface-2); }
+    .dropdown-item.active { background: var(--primary-soft); color: var(--text-strong); }
+    .dropdown-item .check { width: 14px; }
+    .dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+    /* Sparkline */
+    .sparkline {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 22px; padding: 0 8px;
+      background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 999px;
+      font-size: 10px; color: var(--muted);
+    }
+    .sparkline svg { display: block; }
+
+    /* Toggle group */
+    .toggle-group {
+      display: inline-flex;
+      height: 26px;
+      border: 1px solid var(--border); border-radius: 4px;
+      overflow: hidden;
+      background: var(--surface-2);
+    }
+    .toggle-group button {
+      padding: 0 10px;
+      background: transparent; color: var(--muted);
+      border: none;
+      font-size: 11px;
+    }
+    .toggle-group button.active { background: var(--surface); color: var(--text-strong); }
+    .toggle-group button + button { border-left: 1px solid var(--border); }
+
+    /* Focus ring */
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 1px;
+      border-radius: 3px;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(-4px);
+      padding: 8px 14px;
+      background: var(--surface-3); color: var(--text-strong);
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      font-size: 12px; font-weight: 500;
+      z-index: 9999;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transition: opacity 200ms ease, transform 200ms ease;
+      max-width: 80vw;
+    }
+    .toast.show { opacity: 1; }
+    .toast.success { border-color: color-mix(in srgb, var(--success) 48%, var(--border)); }
+    .toast.error { border-color: color-mix(in srgb, var(--danger) 48%, var(--border)); }
+
+    /* Backdrop click blocker */
+    .modal-layer { user-select: none; }
+    .modal { user-select: text; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- ========================== Sidebar ========================== -->
+    <aside class="pane">
+      <div class="card sidebar-header">
+        <div class="brand">
+          <span class="brand-name">HTTP Client</span>
+          <button class="theme-toggle" id="theme-toggle" title="切换主题 (Ctrl+J)">
+            <span id="theme-icon">🌙</span>
+          </button>
+        </div>
+        <button class="btn-primary" id="new-req-btn" title="新建请求 (Ctrl+N)">
+          <span>+ 新建 HTTP 连接</span>
+        </button>
+        <div class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="collections">集合</button>
+          <button class="tab-btn" data-tab="environments">环境</button>
+        </div>
+        <div class="search" id="search-wrap">
+          <input type="text" id="search-input" placeholder="搜索 URL / 方法 / 名称" />
+          <button class="clear" id="search-clear" aria-label="清除">✕</button>
+        </div>
+      </div>
+      <div class="card card-fill" id="sidebar-content-card" style="padding: 10px;">
+        <!-- 动态填充 -->
+      </div>
+    </aside>
+
+    <!-- ========================== Editor ========================== -->
+    <main class="pane">
+      <div class="card toolbar">
+        <div class="url-row">
+          <select class="method-select" id="method-select">
+            <option value="GET">GET</option>
+            <option value="POST" selected>POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="DELETE">DELETE</option>
+          </select>
+          <input class="url-input" id="url-input" type="text" value="http://iot.iotim.com/ehong/tool/GetMemberInfo" />
+          <button class="send-btn dirty" id="send-btn" title="发送请求 (Ctrl+Enter)">
+            <span class="spin"></span>
+            <span class="label-default">发送</span>
+            <span class="label-sending">发送中…</span>
+          </button>
+          <button class="cancel-btn" id="cancel-btn" title="取消请求 (Esc)">取消</button>
+        </div>
+        <div class="secondary-row">
+          <div class="dropdown" id="env-dropdown">
+            <button class="env-select" id="env-trigger">
+              <span class="env-dot"></span>
+              <span id="env-current-name">production</span>
+              <span style="color: var(--muted); font-size: 11px;">▾</span>
+            </button>
+            <div class="dropdown-menu" id="env-menu"></div>
+          </div>
+          <button class="btn-ghost" id="btn-load" title="压测">⚡ 压测</button>
+          <button class="btn-ghost" id="btn-save" title="保存 (Ctrl+S)">💾 保存</button>
+          <button class="btn-ghost" id="btn-curl" title="导入 cURL">📥 导入 cURL</button>
+          <button class="btn-ghost" id="btn-export-curl" title="导出为 cURL 命令">📤 导出 cURL</button>
+          <button class="btn-ghost" id="btn-help" title="快捷键说明 (Ctrl+/)">❓ 说明</button>
+          <span class="spacer"></span>
+          <span class="dirty-chip" id="dirty-chip" style="display: none;">
+            <span style="width:6px;height:6px;border-radius:50%;background:currentColor;"></span>
+            草稿未保存
+          </span>
+        </div>
+      </div>
+
+      <div class="card card-fill" id="editor-card" style="padding: 0;">
+        <div class="section-title-row">
+          <span style="display:flex; align-items:center; gap:8px;">
+            <h3>请求配置</h3>
+            <span class="resp-chip" id="req-name-chip" style="height:20px; font-size:11px;">GetMemberInfo</span>
+          </span>
+          <div class="tabs" role="tablist" style="height: 24px;">
+            <button class="tab-btn active" data-req-tab="params" style="height: 20px;">Params</button>
+            <button class="tab-btn" data-req-tab="headers" style="height: 20px;">Headers</button>
+            <button class="tab-btn" data-req-tab="body" style="height: 20px;">Body</button>
+          </div>
+        </div>
+        <div class="req-tab-content" id="req-tab-content">
+          <!-- 动态填充 -->
+        </div>
+      </div>
+    </main>
+
+    <!-- ========================== Response ========================== -->
+    <section class="pane">
+      <div class="card card-fill resp-card" id="resp-card">
+        <div class="resp-header">
+          <div class="resp-status-row">
+            <span class="resp-status-code" id="resp-status">—</span>
+            <span class="resp-status-text" id="resp-status-text">等待请求</span>
+            <span style="flex:1;"></span>
+            <span class="sparkline" id="sparkline" style="display:none;" title="最近 5 次响应耗时">
+              <svg width="40" height="10" viewBox="0 0 40 10" id="sparkline-svg"></svg>
+              <span id="sparkline-text">—</span>
+            </span>
+          </div>
+          <div class="resp-meta-row" id="resp-meta-row" style="display:none;">
+            <span class="resp-chip" id="meta-time" title="点击复制耗时">⏱ 0 ms</span>
+            <span class="resp-chip" id="meta-size" title="点击复制大小">📦 0 B</span>
+            <span class="resp-chip" id="meta-ctype" title="点击复制 Content-Type">application/json</span>
+          </div>
+        </div>
+        <div class="resp-tabs">
+          <button class="resp-tab active" data-resp-tab="body">📥 响应 Body</button>
+          <button class="resp-tab" data-resp-tab="headers">📋 响应头</button>
+          <button class="resp-tab" data-resp-tab="meta">📊 元信息</button>
+          <button class="resp-tab" data-resp-tab="loadtest">🚀 压测</button>
+        </div>
+        <div class="resp-body">
+          <div class="resp-toolbar" id="resp-toolbar" style="display:none;">
+            <div class="resp-search">
+              <input type="text" id="resp-search-input" placeholder="搜索响应内容 (Ctrl+F)" />
+            </div>
+            <div class="toggle-group" title="响应显示模式">
+              <button class="active" data-mode="pretty">格式化</button>
+              <button data-mode="raw">原文</button>
+            </div>
+            <button class="btn-ghost" id="btn-format-json" title="尝试把响应体按 JSON 格式化">⌬ JSON</button>
+            <button class="btn-ghost" id="btn-copy-resp" title="复制响应 (Ctrl+Shift+C)">📋 复制</button>
+          </div>
+          <div class="resp-content" id="resp-content">
+            <!-- 动态: empty / loading / json / headers / meta / loadtest -->
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Modal 容器 -->
+  <div id="modal-root"></div>
+  <!-- Toast 容器 -->
+  <div id="toast-root"></div>
+
+<script>
+/* ============================================================
+   Mock 数据 / 状态
+   ============================================================ */
+const STATE = {
+  theme: "dark",
+  activeRequestId: "r-iotim",
+  activeMethod: "POST",
+  url: "http://iot.iotim.com/ehong/tool/GetMemberInfo",
+  sidebarTab: "collections",
+  reqTab: "params",
+  respTab: "body",
+  responseMode: "pretty",
+  sidebarSearch: "",
+  respSearch: "",
+  currentEnvId: "production",
+  isDirty: true,
+  isSending: false,
+  loadTestRunning: false,
+  collections: [
+    {
+      id: "c-default", name: "默认集合", isDefault: true, collapsed: false,
+      requests: [
+        // 历史响应快照放在这里 (URL 是唯一 key, 每次发送自动更新)
+        { id: "r-iotim", method: "POST", name: "GetMemberInfo", url: "http://iot.iotim.com/ehong/tool/GetMemberInfo", lastStatus: 200, lastDurationMs: 232, lastExecutedAt: "2026-06-23T14:50:00.000Z", lastResponseSnapshot: null },
+        { id: "r-baidu", method: "GET", name: "Baidu", url: "http://baidu.com", lastStatus: 200, lastDurationMs: 84, lastExecutedAt: "2026-06-23T14:45:00.000Z", lastResponseSnapshot: null },
+        { id: "r-product-list", method: "GET", name: "获取产品列表", url: "https://api.example.com/v2/products?page=1", lastStatus: 401, lastDurationMs: 56, lastExecutedAt: "2026-06-23T13:30:00.000Z", lastResponseSnapshot: null },
+        { id: "r-order", method: "POST", name: "创建订单", url: "https://api.example.com/v2/orders/create", lastStatus: 500, lastDurationMs: 1240, lastExecutedAt: "2026-06-23T09:32:00.000Z", lastResponseSnapshot: null },
+      ],
+    },
+    {
+      id: "c-product", name: "产品 API", collapsed: false,
+      requests: [
+        { id: "r-product-detail", method: "GET", name: "获取产品详情", url: "https://api.example.com/v2/products/{id}", lastStatus: null, lastDurationMs: null, lastExecutedAt: null, lastResponseSnapshot: null },
+        { id: "r-product-create", method: "POST", name: "创建产品", url: "https://api.example.com/v2/products", lastStatus: null, lastDurationMs: null, lastExecutedAt: null, lastResponseSnapshot: null },
+        { id: "r-product-delete", method: "DELETE", name: "删除产品", url: "https://api.example.com/v2/products/{id}", lastStatus: null, lastDurationMs: null, lastExecutedAt: null, lastResponseSnapshot: null },
+      ],
+    },
+    {
+      id: "c-auth", name: "认证服务", collapsed: true,
+      requests: [
+        { id: "r-login", method: "POST", name: "OAuth 登录", url: "https://auth.example.com/oauth/token", lastStatus: 200, lastDurationMs: 312, lastExecutedAt: "2026-06-22T18:00:00.000Z", lastResponseSnapshot: null },
+        { id: "r-refresh", method: "POST", name: "刷新 Token", url: "https://auth.example.com/oauth/refresh", lastStatus: null, lastDurationMs: null, lastExecutedAt: null, lastResponseSnapshot: null },
+      ],
+    },
+  ],
+  environments: [
+    {
+      id: "default", name: "default", active: false,
+      variables: { baseUrl: "", token: "" },
+    },
+    {
+      id: "staging", name: "staging", active: false,
+      variables: { baseUrl: "https://staging.api.example.com", token: "eyJhbGciOiJIUzI1NiJ9.staging-token" },
+    },
+    {
+      id: "production", name: "production", active: true,
+      variables: { baseUrl: "https://api.example.com", token: "eyJhbGciOiJIUzI1NiJ9.prod-token-xxx" },
+    },
+  ],
+  requestDraft: {
+    name: "GetMemberInfo",
+    params: [
+      { enabled: true, key: "memberId", value: "demo_user_001" },
+      { enabled: true, key: "timestamp", value: "1719120000" },
+      { enabled: false, key: "debug", value: "1" },
+    ],
+    headers: [
+      { enabled: true, key: "Authorization", value: "Bearer {{token}}" },
+      { enabled: true, key: "Content-Type", value: "application/json" },
+      { enabled: false, key: "X-Trace-Id", value: "" },
+    ],
+    bodyMode: "json",
+    bodyText: JSON.stringify({ memberId: "demo_user_001", includeProfile: true }, null, 2),
+  },
+};
+
+const MOCK_RESPONSES = {
+  "POST::http://iot.iotim.com/ehong/tool/GetMemberInfo": {
+    status: 200, statusText: "OK", durationMs: 232, sizeBytes: 1840,
+    contentType: "application/json; charset=utf-8",
+    finalUrl: "http://iot.iotim.com/ehong/tool/GetMemberInfo",
+    requestId: "a7c3f0e2-b4d5-4e9a-8c2d",
+    headers: [
+      ["content-type", "application/json; charset=utf-8", true],
+      ["x-request-id", "a7c3f0e2-b4d5-4e9a-8c2d", false],
+      ["x-rate-limit-remaining", "98/100", false],
+      ["cache-control", "no-store", true],
+      ["set-cookie", "sid=eyJ1c2VyX2lkIjoxMjM0NTY3fQ; Path=/; HttpOnly; Secure; SameSite=Lax", true],
+      ["server", "nginx/1.21.6", false],
+      ["strict-transport-security", "max-age=31536000; includeSubDomains", true],
+      ["vary", "Accept-Encoding", false],
+    ],
+    body: {
+      code: 0,
+      message: "获取成功",
+      data: {
+        memberId: "demo_user_001",
+        nickname: "翌虹测试账号",
+        avatar: "https://cdn.iotim.com/avatars/demo_user_001.png",
+        level: 3,
+        points: 2480,
+        registeredAt: "2024-11-23T08:42:11Z",
+        profile: { gender: "male", age: 28, city: "深圳", vip: true, vipExpiresAt: "2027-06-23T00:00:00Z" },
+        permissions: ["read:devices", "write:devices", "read:reports"],
+        stats: { devicesCount: 7, reportsCount: 142, lastActiveAt: "2026-06-23T11:43:18Z" },
+        recentDevices: [
+          { id: "dev-001", name: "客厅摄像头", type: "camera", online: true },
+          { id: "dev-002", name: "主卧空调", type: "ac", online: true },
+          { id: "dev-003", name: "玄关门锁", type: "lock", online: false },
+        ],
+        preferences: { theme: "dark", language: "zh-CN", notifications: { push: true, email: false, sms: false } },
+        billing: {
+          plan: "pro", monthlyFee: 29.9, nextBillingDate: "2026-07-23",
+          paymentMethod: { type: "alipay", last4: "****8821" },
+        },
+      },
+      traceId: "0a7b1c2d3e4f",
+      timestamp: 1719124800,
+    },
+  },
+  "GET::http://baidu.com": {
+    status: 200, statusText: "OK", durationMs: 84, sizeBytes: 1480,
+    contentType: "text/html; charset=utf-8",
+    finalUrl: "http://baidu.com",
+    requestId: "baidu-abc123",
+    headers: [
+      ["content-type", "text/html; charset=utf-8", true],
+      ["server", "BWS/1.1", false],
+      ["set-cookie", "BAIDUID=abc123; expires=Sun, 22-Jun-2025 11:43:00 GMT; path=/; domain=.baidu.com", true],
+      ["cache-control", "private, no-cache, no-store", true],
+      ["x-ua-compatible", "IE=Edge,chrome=1", false],
+    ],
+    body: "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head><meta charset=\"UTF-8\"><title>百度一下,你就知道</title></head>\n<body><div id=\"wrapper\"><div id=\"logo\"><img src=\"/img/bd_logo1.png\" alt=\"百度\"></div><form action=\"/s\"><input name=\"wd\"><button>百度一下</button></form></div></body>\n</html>",
+  },
+  "GET::https://api.example.com/v2/products?page=1": {
+    status: 401, statusText: "Unauthorized", durationMs: 56, sizeBytes: 86,
+    contentType: "application/json",
+    finalUrl: "https://api.example.com/v2/products?page=1",
+    requestId: "unauth-401",
+    headers: [
+      ["content-type", "application/json", true],
+      ["www-authenticate", 'Bearer realm="api"', true],
+    ],
+    body: { error: "invalid_token", message: "Access token expired" },
+  },
+};
+
+const SPARKLINE_DATA = [124, 188, 92, 312, 232];
+
+/* ============================================================
+   工具
+   ============================================================ */
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+function escapeHTML(s) { return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ============================================================
+   Method pill HTML
+   ============================================================ */
+function methodPillHTML(method) {
+  const shapes = { GET: "circle", POST: "triangle", PUT: "diamond", DELETE: "cross", PATCH: "bolt" };
+  return `<span class="method-pill method-${method.toLowerCase()}"><span class="shape ${shapes[method] || "circle"}"></span>${method}</span>`;
+}
+
+/* ============================================================
+   Sidebar 内容 (集合 / 环境)
+   ============================================================ */
+function renderSidebar() {
+  const card = $("#sidebar-content-card");
+  if (STATE.sidebarTab === "collections") {
+    card.innerHTML = `
+      <div class="section-label">
+        <span>集合 · ${STATE.collections.length}</span>
+        <button class="add-btn" id="new-collection-btn" title="新建集合">+</button>
+      </div>
+      <div class="scroll-list" id="collections-list"></div>
+    `;
+    renderCollections();
+  } else if (STATE.sidebarTab === "environments") {
+    card.innerHTML = `
+      <div class="section-label">
+        <span>环境 · ${STATE.environments.length}</span>
+        <button class="add-btn" id="new-env-btn" title="新建环境">+</button>
+      </div>
+      <div class="scroll-list" id="envs-list"></div>
+    `;
+    renderEnvironments();
+  }
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  const now = Date.now();
+  const diff = Math.floor((now - t) / 1000);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function findReq(rid) {
+  for (const c of STATE.collections) {
+    const r = c.requests.find((x) => x.id === rid);
+    if (r) return { req: r, collection: c };
+  }
+  return null;
+}
+
+function findReqByUrlKey(method, url) {
+  for (const c of STATE.collections) {
+    const r = c.requests.find((x) => x.method === method && x.url === url);
+    if (r) return { req: r, collection: c };
+  }
+  return null;
+}
+
+function renderCollections() {
+  const list = $("#collections-list");
+  if (!list) return;
+  const kw = STATE.sidebarSearch.toLowerCase();
+  list.innerHTML = STATE.collections.map((c) => {
+    const reqs = kw
+      ? c.requests.filter((r) => `${r.method} ${r.url} ${r.name}`.toLowerCase().includes(kw))
+      : c.requests;
+    return `
+      <div class="collection ${c.collapsed ? "collapsed" : ""}" data-collection-id="${c.id}">
+        <div class="collection-header" data-toggle-collection="${c.id}" data-context-collection="${c.id}">
+          <span class="chevron">${c.collapsed ? "▸" : "▾"}</span>
+          <span style="flex:1;">📁 ${escapeHTML(c.name)}${c.isDefault ? ' <span style="font-size:9px; opacity:0.6; margin-left:4px;">DEFAULT</span>' : ""}</span>
+          <span class="count">${reqs.length}${reqs.length !== c.requests.length ? `/${c.requests.length}` : ""}</span>
+        </div>
+        <div class="collection-body" data-drop-collection="${c.id}">
+          ${reqs.length === 0
+            ? `<div class="req-empty" data-drop-collection="${c.id}">${kw ? "无匹配请求" : (c.isDefault ? "还没有请求, 发送后会出现在这里" : "拖入 URL 或右击新建请求")}</div>`
+            : reqs.map((r) => {
+              const statusCls = r.lastStatus == null ? "" : r.lastStatus >= 500 ? "err" : r.lastStatus >= 400 ? "warn" : "ok";
+              const statusBadge = r.lastStatus == null ? `<span style="color:var(--soft);">未运行</span>` : `<span class="status ${statusCls}">${r.lastStatus}</span><span style="opacity:0.5;">·</span><span>${r.lastDurationMs}ms</span>`;
+              const active = r.id === STATE.activeRequestId;
+              return `
+                <div class="req-item ${active ? "active" : ""}" draggable="true" data-req-id="${r.id}" data-context-req="${r.id}">
+                  ${methodPillHTML(r.method)}
+                  <span class="req-main">
+                    <span class="req-name">${escapeHTML(r.name)}</span>
+                    <span class="req-meta">
+                      ${statusBadge}
+                      <span style="opacity:0.5;">·</span>
+                      <span style="color:var(--soft);">${formatRelativeTime(r.lastExecutedAt)}</span>
+                    </span>
+                  </span>
+                </div>
+              `;
+            }).join("")}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  // 折叠 / 展开
+  list.querySelectorAll("[data-toggle-collection]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.button !== 0) return;
+      const id = el.dataset.toggleCollection;
+      const c = STATE.collections.find((x) => x.id === id);
+      c.collapsed = !c.collapsed;
+      renderCollections();
+    });
+  });
+
+  // 集合右键菜单
+  list.querySelectorAll("[data-context-collection]").forEach((el) => {
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const id = el.dataset.contextCollection;
+      const c = STATE.collections.find((x) => x.id === id);
+      const items = [];
+      items.push({ label: "新建请求", icon: "➕", onClick: () => addNewRequestToCollection(c) });
+      if (!c.isDefault) {
+        items.push({ label: "重命名", icon: "✎", onClick: () => renameCollection(c) });
+        items.push({ divider: true });
+        items.push({ label: "删除集合", icon: "🗑", danger: true, onClick: () => deleteCollection(c) });
+      } else {
+        items.push({ divider: true });
+        items.push({ label: "默认集合不能删除", icon: "🔒", disabled: true });
+      }
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+
+  // URL 右键菜单
+  list.querySelectorAll("[data-context-req]").forEach((el) => {
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rid = el.dataset.contextReq;
+      const found = findReq(rid);
+      if (!found) return;
+      const { req, collection } = found;
+      const items = [
+        { label: "加载到编辑器", icon: "▶", onClick: () => selectSavedRequest(rid) },
+        { label: "复制 URL", icon: "📋", onClick: () => { navigator.clipboard.writeText(req.url); toast("URL 已复制", "success"); } },
+        { label: "复制为 cURL", icon: "📤", onClick: () => exportCurlForReq(req) },
+        { label: "重命名", icon: "✎", onClick: () => renameRequest(req) },
+        { divider: true },
+        { label: "删除请求", icon: "🗑", danger: true, onClick: () => deleteRequest(req, collection) },
+      ];
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+
+  // 点击 req → 加载
+  list.querySelectorAll(".req-item").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.button !== 0) return;
+      selectSavedRequest(el.dataset.reqId);
+    });
+  });
+
+  // 拖拽 - req item 作为 source
+  list.querySelectorAll(".req-item[draggable]").forEach((el) => {
+    el.addEventListener("dragstart", (e) => {
+      const rid = el.dataset.reqId;
+      e.dataTransfer.setData("text/plain", rid);
+      e.dataTransfer.effectAllowed = "move";
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => {
+      el.classList.remove("dragging");
+      list.querySelectorAll(".drop-target").forEach((x) => x.classList.remove("drop-target"));
+    });
+  });
+
+  // 拖拽 - collection body 作为 target
+  list.querySelectorAll("[data-drop-collection]").forEach((el) => {
+    el.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      el.classList.add("drop-target");
+    });
+    el.addEventListener("dragleave", (e) => {
+      if (e.target === el) el.classList.remove("drop-target");
+    });
+    el.addEventListener("drop", (e) => {
+      e.preventDefault();
+      el.classList.remove("drop-target");
+      const rid = e.dataTransfer.getData("text/plain");
+      const targetId = el.dataset.dropCollection;
+      if (!rid || !targetId) return;
+      const found = findReq(rid);
+      const target = STATE.collections.find((x) => x.id === targetId);
+      if (!found || !target) return;
+      if (found.collection.id === target.id) return;
+      // 移动
+      found.collection.requests = found.collection.requests.filter((r) => r.id !== rid);
+      target.requests.push(found.req);
+      renderCollections();
+      toast(`已移至 ${target.name}`, "success");
+    });
+  });
+
+  // 新建集合
+  $("#new-collection-btn")?.addEventListener("click", () => {
+    promptModal({
+      title: "新建集合",
+      label: "集合名称",
+      placeholder: "例如: 产品 API",
+      defaultValue: "",
+      confirmText: "创建",
+      onConfirm: (name) => {
+        if (!name) return;
+        STATE.collections.push({ id: "c-" + Date.now(), name, collapsed: false, requests: [] });
+        renderCollections();
+        toast(`集合已创建: ${name}`, "success");
+      },
+    });
+  });
+}
+
+// 集合操作
+function addNewRequestToCollection(collection) {
+  promptModal({
+    title: `新建请求 → ${collection.name}`,
+    label: "请求 URL",
+    placeholder: "https://api.example.com/v2/foo",
+    defaultValue: "",
+    confirmText: "创建",
+    onConfirm: (url) => {
+      if (!url) return;
+      try { new URL(url); } catch { toast("URL 格式无效", "error"); return; }
+      const id = "r-" + Date.now();
+      collection.requests.unshift({
+        id, method: "GET", name: url.slice(0, 40), url,
+        lastStatus: null, lastDurationMs: null, lastExecutedAt: null, lastResponseSnapshot: null,
+      });
+      renderCollections();
+      selectSavedRequest(id);
+      toast(`已添加到 ${collection.name}`, "success");
+    },
+  });
+}
+
+function renameCollection(c) {
+  promptModal({
+    title: "重命名集合",
+    label: "新名称",
+    defaultValue: c.name,
+    confirmText: "保存",
+    onConfirm: (name) => {
+      if (!name || name === c.name) return;
+      const old = c.name;
+      c.name = name;
+      renderCollections();
+      toast(`已重命名: ${old} → ${name}`, "success");
+    },
+  });
+}
+
+function deleteCollection(c) {
+  if (STATE.collections.length === 1) {
+    toast("至少需要保留一个集合", "error");
+    return;
+  }
+  confirmModal({
+    title: "删除集合",
+    message: `确认删除 "${c.name}"? 该集合下的 ${c.requests.length} 个请求会被移到默认集合, 删除后不可恢复.`,
+    confirmText: "删除",
+    danger: true,
+    onConfirm: () => {
+      const defCol = STATE.collections.find((x) => x.isDefault) || STATE.collections[0];
+      defCol.requests.push(...c.requests);
+      STATE.collections = STATE.collections.filter((x) => x.id !== c.id);
+      renderCollections();
+      toast(`已删除集合: ${c.name}`, "success");
+    },
+  });
+}
+
+function renameRequest(req) {
+  promptModal({
+    title: "重命名请求",
+    label: "请求名称",
+    defaultValue: req.name,
+    confirmText: "保存",
+    onConfirm: (name) => {
+      if (!name) return;
+      const old = req.name;
+      req.name = name;
+      if (STATE.activeRequestId === req.id) $("#req-name-chip").textContent = name;
+      renderCollections();
+      toast(`已重命名: ${old} → ${name}`, "success");
+    },
+  });
+}
+
+function deleteRequest(req, collection) {
+  confirmModal({
+    title: "删除请求",
+    message: `确认删除 "${req.name}"?`,
+    confirmText: "删除",
+    danger: true,
+    onConfirm: () => {
+      collection.requests = collection.requests.filter((r) => r.id !== req.id);
+      if (STATE.activeRequestId === req.id) {
+        STATE.activeRequestId = null;
+        currentResponse = null;
+        renderEmpty();
+        $("#req-name-chip").textContent = "未选择";
+      }
+      renderCollections();
+      toast(`已删除: ${req.name}`, "success");
+    },
+  });
+}
+
+function moveRequest(req, fromCol, toCol) {
+  fromCol.requests = fromCol.requests.filter((r) => r.id !== req.id);
+  toCol.requests.unshift(req);
+  renderCollections();
+  toast(`已从 ${fromCol.name} 移至 ${toCol.name}`, "success");
+}
+
+function exportCurlForReq(req) {
+  STATE.activeMethod = req.method;
+  STATE.url = req.url;
+  exportCurl();
+}
+
+function renderEnvironments() {
+  const list = $("#envs-list");
+  if (!list) return;
+  list.innerHTML = STATE.environments.map((env) => `
+    <div class="env-card ${env.active ? "active" : ""}" data-env-id="${env.id}">
+      <div class="env-card-head">
+        <span class="env-dot" style="background: ${env.active ? "var(--success)" : "var(--soft)"}"></span>
+        <span class="env-name">${escapeHTML(env.name)}</span>
+        <span class="spacer"></span>
+        ${env.active ? '<span class="resp-chip" style="height:18px; font-size:10px; padding:0 6px;">活跃</span>' : ""}
+      </div>
+      <div class="var-row">
+        ${Object.entries(env.variables).map(([k, v]) => `
+          <div class="k">${escapeHTML(k)}</div>
+          <div class="v" title="${escapeHTML(v)}">${escapeHTML(v || "—")}</div>
+        `).join("")}
+      </div>
+      <div class="actions">
+        ${!env.active ? `<button class="btn-secondary" data-activate-env="${env.id}" style="flex:1;">✓ 激活</button>` : `<button class="btn-secondary" data-edit-env="${env.id}" style="flex:1;">✎ 编辑</button>`}
+        <button class="icon-btn" data-delete-env="${env.id}" title="删除环境" style="width:28px; height:28px; font-size:13px; color:var(--soft);">🗑</button>
+      </div>
+    </div>
+  `).join("");
+  list.querySelectorAll("[data-activate-env]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.activateEnv;
+      STATE.environments.forEach((e) => e.active = e.id === id);
+      const env = STATE.environments.find((e) => e.id === id);
+      STATE.currentEnvId = id;
+      $("#env-current-name").textContent = env.name;
+      renderEnvironments();
+      renderEnvMenu();
+      toast(`已切换到环境: ${env.name}`, "success");
+    });
+  });
+  list.querySelectorAll("[data-delete-env]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.deleteEnv;
+      const env = STATE.environments.find((e) => e.id === id);
+      if (!env) return;
+      if (STATE.environments.length === 1) {
+        toast("至少需要保留一个环境", "error");
+        return;
+      }
+      confirmModal({
+        title: "删除环境",
+        message: `确认删除环境 "${env.name}"? 删除后不可恢复.`,
+        confirmText: "删除",
+        danger: true,
+        onConfirm: () => {
+          STATE.environments = STATE.environments.filter((e) => e.id !== id);
+          if (STATE.currentEnvId === id) {
+            STATE.currentEnvId = STATE.environments[0].id;
+            STATE.environments[0].active = true;
+            $("#env-current-name").textContent = STATE.environments[0].name;
+          }
+          renderEnvMenu();
+          renderEnvironments();
+          toast(`已删除环境: ${env.name}`, "success");
+        },
+      });
+    });
+  });
+
+  list.querySelectorAll("[data-edit-env]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.editEnv;
+      const env = STATE.environments.find((e) => e.id === id);
+      editEnvModal(env);
+    });
+  });
+  $("#new-env-btn")?.addEventListener("click", () => {
+    const env = { id: "env-" + Date.now(), name: "new-env", active: false, variables: { baseUrl: "", token: "" } };
+    editEnvModal(env, true);
+  });
+}
+
+function renderEnvMenu() {
+  const menu = $("#env-menu");
+  menu.innerHTML = STATE.environments.map((env) => `
+    <button class="dropdown-item ${env.id === STATE.currentEnvId ? "active" : ""}" data-env-menu-id="${env.id}">
+      <span class="check">${env.id === STATE.currentEnvId ? "✓" : ""}</span>
+      <span class="env-dot" style="background: ${env.active ? "var(--success)" : "var(--soft)"}; width:6px; height:6px; border-radius:50%;"></span>
+      <span>${escapeHTML(env.name)}</span>
+    </button>
+  `).join("") + `<div class="dropdown-divider"></div>
+    <button class="dropdown-item" id="manage-env-btn">⚙ 管理环境…</button>`;
+  menu.querySelectorAll("[data-env-menu-id]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.envMenuId;
+      STATE.environments.forEach((e) => e.active = e.id === id);
+      const env = STATE.environments.find((e) => e.id === id);
+      STATE.currentEnvId = id;
+      $("#env-current-name").textContent = env.name;
+      $("#env-dropdown").classList.remove("open");
+      renderEnvironments();
+      toast(`已切换到环境: ${env.name}`, "success");
+    });
+  });
+  $("#manage-env-btn")?.addEventListener("click", () => {
+    $("#env-dropdown").classList.remove("open");
+    switchSidebarTab("environments");
+  });
+}
+
+/* ============================================================
+   编辑器三 tab
+   ============================================================ */
+function renderReqTab() {
+  const c = $("#req-tab-content");
+  if (STATE.reqTab === "params") {
+    c.innerHTML = renderKVEditor("params", "URL 查询参数", "参数名", "参数值", "添加参数");
+  } else if (STATE.reqTab === "headers") {
+    c.innerHTML = renderKVEditor("headers", "请求头", "Header", "Value", "添加 Header");
+  } else if (STATE.reqTab === "body") {
+    c.innerHTML = `
+      <div class="body-editor">
+        <div class="body-toolbar">
+          <select id="body-mode">
+            <option value="none" ${STATE.requestDraft.bodyMode === "none" ? "selected" : ""}>none</option>
+            <option value="raw" ${STATE.requestDraft.bodyMode === "raw" ? "selected" : ""}>raw</option>
+            <option value="json" ${STATE.requestDraft.bodyMode === "json" ? "selected" : ""}>json</option>
+          </select>
+          <button class="btn-ghost" id="body-format-btn" title="格式化 JSON body">⌬ 格式化</button>
+          <span style="flex:1;"></span>
+          <span class="resp-chip" style="height:22px; font-size:11px;">${STATE.requestDraft.bodyText.length} chars</span>
+        </div>
+        <textarea class="body-textarea" id="body-textarea" spellcheck="false" placeholder="${STATE.requestDraft.bodyMode === "json" ? '{ "key": "value" }' : "请输入请求体"}">${escapeHTML(STATE.requestDraft.bodyText)}</textarea>
+      </div>
+    `;
+    $("#body-mode").addEventListener("change", (e) => {
+      STATE.requestDraft.bodyMode = e.target.value;
+      markDirty(true);
+      renderReqTab();
+    });
+    $("#body-format-btn").addEventListener("click", () => {
+      try {
+        const pretty = JSON.stringify(JSON.parse(STATE.requestDraft.bodyText || "{}"), null, 2);
+        STATE.requestDraft.bodyText = pretty;
+        $("#body-textarea").value = pretty;
+        markDirty(true);
+        toast("JSON 已格式化", "success");
+      } catch { toast("当前内容不是合法 JSON", "error"); }
+    });
+    $("#body-textarea").addEventListener("input", (e) => {
+      STATE.requestDraft.bodyText = e.target.value;
+      markDirty(true);
+    });
+  }
+}
+
+function renderKVEditor(kind, label, keyPh, valPh, addText) {
+  const items = STATE.requestDraft[kind];
+  return `
+    <div class="kv-editor">
+      <div class="kv-header">
+        <span>${label}</span>
+      </div>
+      <div class="kv-header">
+        <span></span>
+        <span>Key</span>
+        <span>Value</span>
+        <span></span>
+      </div>
+      ${items.map((item, i) => `
+        <div class="kv-row ${item.enabled ? "" : "disabled"}" data-kind="${kind}" data-index="${i}">
+          <label class="check-cell"><input type="checkbox" ${item.enabled ? "checked" : ""} data-field="enabled" /></label>
+          <input type="text" placeholder="${keyPh}" value="${escapeHTML(item.key)}" data-field="key" />
+          <input type="text" placeholder="${valPh}" value="${escapeHTML(item.value)}" data-field="value" />
+          <button class="del-btn" data-action="del" title="删除">✕</button>
+        </div>
+      `).join("")}
+      <button class="add-row-btn" data-action="add" data-kind="${kind}">+ ${addText}</button>
+    </div>
+  `;
+}
+
+function bindKVEditor() {
+  const c = $("#req-tab-content");
+  c.querySelectorAll(".kv-row").forEach((row) => {
+    const kind = row.dataset.kind;
+    const idx = parseInt(row.dataset.index, 10);
+    row.querySelectorAll("input").forEach((inp) => {
+      inp.addEventListener("input", (e) => {
+        const field = e.target.dataset.field;
+        const v = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+        STATE.requestDraft[kind][idx][field] = v;
+        if (field === "enabled") row.classList.toggle("disabled", !v);
+        markDirty(true);
+      });
+    });
+    row.querySelector("[data-action='del']").addEventListener("click", () => {
+      STATE.requestDraft[kind].splice(idx, 1);
+      renderReqTab();
+      bindKVEditor();
+      markDirty(true);
+    });
+  });
+  c.querySelectorAll("[data-action='add']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.kind;
+      STATE.requestDraft[kind].push({ enabled: true, key: "", value: "" });
+      renderReqTab();
+      bindKVEditor();
+      markDirty(true);
+      // focus new row
+      const rows = c.querySelectorAll(".kv-row");
+      const last = rows[rows.length - 1];
+      if (last) last.querySelector("input[data-field='key']").focus();
+    });
+  });
+}
+
+/* ============================================================
+   Response 渲染
+   ============================================================ */
+let currentResponse = null;
+function renderEmpty() {
+  currentResponse = null;
+  $("#resp-toolbar").style.display = "none";
+  $("#resp-meta-row").style.display = "none";
+  $("#sparkline").style.display = "none";
+  $("#resp-status").textContent = "—";
+  $("#resp-status").className = "resp-status-code";
+  $("#resp-status-text").textContent = "等待请求";
+  $("#resp-content").innerHTML = `
+    <div class="empty-state">
+      <div class="icon">📡</div>
+      <div class="title">还没有响应</div>
+      <div class="hint">
+        点击 <strong style="color:var(--text);">发送</strong> 或按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
+      </div>
+      <div class="sub-hint">或选择左侧一条历史记录快速回看</div>
+    </div>
+  `;
+}
+
+function renderLoading() {
+  $("#resp-toolbar").style.display = "none";
+  $("#resp-meta-row").style.display = "flex";
+  $("#resp-status").textContent = "···";
+  $("#resp-status").className = "resp-status-code";
+  $("#resp-status-text").textContent = "请求进行中…";
+  $("#meta-time").textContent = "⏱ 0 ms";
+  $("#meta-size").textContent = "📦 — B";
+  $("#meta-ctype").textContent = "";
+  $("#resp-content").innerHTML = `
+    <div class="skeleton">
+      <div class="bar" style="width: 35%"></div>
+      <div class="bar" style="width: 80%"></div>
+      <div class="bar" style="width: 60%"></div>
+      <div class="bar" style="width: 90%"></div>
+      <div class="bar" style="width: 45%"></div>
+      <div class="bar" style="width: 70%"></div>
+      <div class="bar" style="width: 25%"></div>
+    </div>
+  `;
+}
+
+function renderResponse(resp) {
+  currentResponse = resp;
+  const ok = resp.status >= 200 && resp.status < 300;
+  const warn = resp.status >= 400 && resp.status < 500;
+  const err = resp.status >= 500;
+  $("#resp-status").textContent = resp.status;
+  $("#resp-status").className = "resp-status-code " + (ok ? "ok" : warn ? "warn" : err ? "err" : "");
+  $("#resp-status-text").textContent = resp.statusText;
+  $("#resp-meta-row").style.display = "flex";
+  $("#meta-time").textContent = `⏱ ${resp.durationMs} ms`;
+  const sizeKB = resp.sizeBytes / 1024;
+  let sizeText, sizeClass = "";
+  if (sizeKB < 1) sizeText = `${resp.sizeBytes} B`;
+  else if (sizeKB < 100) sizeText = `${sizeKB.toFixed(1)} KB`;
+  else { sizeText = `${sizeKB.toFixed(0)} KB`; sizeClass = "size-big"; }
+  if (sizeKB > 500) sizeClass = "size-huge";
+  const sizeEl = $("#meta-size");
+  sizeEl.textContent = `📦 ${sizeText}`;
+  sizeEl.className = "resp-chip " + sizeClass;
+  $("#meta-ctype").textContent = resp.contentType || "—";
+
+  if (SPARKLINE_DATA.length > 0) {
+    $("#sparkline").style.display = "inline-flex";
+    drawSparkline(SPARKLINE_DATA);
+    $("#sparkline-text").textContent = `${Math.max(...SPARKLINE_DATA)}ms max`;
+  }
+  switchRespTab(STATE.respTab);
+}
+
+function switchRespTab(tab) {
+  STATE.respTab = tab;
+  $$(".resp-tab").forEach((b) => b.classList.toggle("active", b.dataset.respTab === tab));
+  const r = currentResponse;
+  if (!r) { renderEmpty(); return; }
+  if (tab === "body") renderBodyView();
+  else if (tab === "headers") renderHeadersView();
+  else if (tab === "meta") renderMetaView();
+  else if (tab === "loadtest") renderLoadTestView();
+}
+
+function renderBodyView() {
+  $("#resp-toolbar").style.display = "flex";
+  const r = currentResponse;
+  const ctype = (r.contentType || "").toLowerCase();
+  let html = "";
+  if (STATE.responseMode === "raw" || (!ctype.includes("json") && !ctype.includes("html"))) {
+    const text = typeof r.body === "string" ? r.body : JSON.stringify(r.body);
+    html = `<pre class="json-view" style="white-space: pre-wrap; color: var(--text);">${escapeHTML(text)}</pre>`;
+  } else if (ctype.includes("json")) {
+    html = `<div class="json-view" id="json-view">${renderJSON(r.body, 0)}</div>`;
+  } else if (ctype.includes("html")) {
+    const text = typeof r.body === "string" ? r.body : JSON.stringify(r.body);
+    html = `<pre class="json-view" style="white-space: pre-wrap; color: var(--text);">${escapeHTML(text)}</pre>`;
+  }
+  $("#resp-content").innerHTML = html + `<button class="resp-copy-btn icon-btn" id="resp-float-copy" title="复制响应">📋</button>`;
+  $("#resp-float-copy").addEventListener("click", () => copyResp());
+  bindToggles();
+  bindSearchHighlight();
+}
+
+function renderHeadersView() {
+  $("#resp-toolbar").style.display = "none";
+  const r = currentResponse;
+  const sorted = [...r.headers].sort((a, b) => (b[2] === true) - (a[2] === true));
+  $("#resp-content").innerHTML = `
+    <div class="header-table">
+      ${sorted.map(([k, v, important]) => `
+        <div class="header-row ${important ? "important" : ""}">
+          <span class="key">${escapeHTML(k)}</span>
+          <span class="val ${important ? "code" : ""}" title="${escapeHTML(v)}">${escapeHTML(v)}</span>
+          <button class="copy" data-copy="${escapeHTML(v)}">复制</button>
+        </div>
+      `).join("")}
+    </div>
+  `;
+  $$(".header-row .copy").forEach((b) => {
+    b.addEventListener("click", () => {
+      navigator.clipboard.writeText(b.dataset.copy);
+      toast(`已复制: ${b.dataset.copy.slice(0, 40)}${b.dataset.copy.length > 40 ? "…" : ""}`, "success");
+    });
+  });
+}
+
+function renderMetaView() {
+  $("#resp-toolbar").style.display = "none";
+  const r = currentResponse;
+  $("#resp-content").innerHTML = `
+    <div class="meta-grid">
+      <div class="meta-item"><span class="label">最终 URL</span><span class="value">${escapeHTML(r.finalUrl || STATE.url)}</span></div>
+      <div class="meta-item"><span class="label">耗时</span><span class="value">${r.durationMs} ms</span></div>
+      <div class="meta-item"><span class="label">响应大小</span><span class="value">${r.sizeBytes} B</span></div>
+      <div class="meta-item"><span class="label">内容类型</span><span class="value">${escapeHTML(r.contentType)}</span></div>
+      <div class="meta-item"><span class="label">请求 ID</span><span class="value">${escapeHTML(r.requestId || "—")}</span></div>
+      <div class="meta-item"><span class="label">重定向</span><span class="value">否</span></div>
+      <div class="meta-item"><span class="label">未解析变量</span><span class="value">无</span></div>
+      <div class="meta-item"><span class="label">环境</span><span class="value">${escapeHTML(STATE.environments.find(e => e.id === STATE.currentEnvId)?.name || "—")}</span></div>
+    </div>
+  `;
+}
+
+function renderLoadTestView() {
+  $("#resp-toolbar").style.display = "none";
+  if (STATE.loadTestRunning) {
+    $("#resp-content").innerHTML = `
+      <div style="padding: 16px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+          <span style="font-size:12px; font-weight:600;">压测进行中…</span>
+          <button class="btn-ghost" id="lt-stop" style="color: var(--danger);">⏹ 停止</button>
+        </div>
+        <div class="progress-bar"><span id="lt-bar" style="width: 0%"></span></div>
+        <div class="progress-text"><span id="lt-status">已完成 0 / 100</span><span id="lt-elapsed">0s</span></div>
+        <div class="metrics-grid" id="lt-metrics"></div>
+      </div>
+    `;
+    $("#lt-stop").addEventListener("click", stopLoadTest);
+    runLoadTest();
+    return;
+  }
+  $("#resp-content").innerHTML = `
+    <div style="padding: 16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:12px;">压测配置</div>
+      <div class="load-config">
+        <div class="field-block"><label>总请求数</label><input type="number" id="lt-total" value="100" min="1" /></div>
+        <div class="field-block"><label>并发数</label><input type="number" id="lt-concurrency" value="10" min="1" /></div>
+        <div class="field-block"><label>超时 (ms)</label><input type="number" id="lt-timeout" value="30000" min="100" /></div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="btn-primary" id="lt-start">🚀 开始压测</button>
+        <button class="btn-secondary" id="lt-preset">⚡ 快速 (50/5)</button>
+        <button class="btn-secondary" id="lt-preset2">🔥 强力 (500/50)</button>
+      </div>
+      <div style="margin-top:16px; font-size:11px; color:var(--muted);">
+        压测会用 mock 后端, 演示用. 实际会真实请求当前 URL.
+      </div>
+    </div>
+  `;
+  $("#lt-start").addEventListener("click", () => {
+    STATE.loadTestRunning = true;
+    STATE.loadTestTotal = parseInt($("#lt-total").value, 10);
+    STATE.loadTestConcurrency = parseInt($("#lt-concurrency").value, 10);
+    STATE.loadTestTimeout = parseInt($("#lt-timeout").value, 10);
+    renderLoadTestView();
+  });
+  $("#lt-preset").addEventListener("click", () => {
+    $("#lt-total").value = "50"; $("#lt-concurrency").value = "5";
+    toast("已应用快速预设", "success");
+  });
+  $("#lt-preset2").addEventListener("click", () => {
+    $("#lt-total").value = "500"; $("#lt-concurrency").value = "50";
+    toast("已应用强力预设", "success");
+  });
+}
+
+function runLoadTest() {
+  const total = STATE.loadTestTotal || 100;
+  let completed = 0;
+  let success = 0;
+  let failed = 0;
+  const durations = [];
+  const errors = [];
+  const startedAt = Date.now();
+
+  const tick = () => {
+    if (!STATE.loadTestRunning) return;
+    const step = Math.max(1, Math.floor(total / 20));
+    for (let i = 0; i < step && completed < total; i++) {
+      completed++;
+      const ok = Math.random() > 0.04;
+      if (ok) success++; else { failed++; if (errors.length < 5) errors.push("ECONNRESET: target refused"); }
+      durations.push(50 + Math.floor(Math.random() * 300));
+    }
+    const pct = Math.round((completed / total) * 100);
+    $("#lt-bar").style.width = pct + "%";
+    $("#lt-status").textContent = `已完成 ${completed} / ${total} · 成功 ${success} · 失败 ${failed}`;
+    $("#lt-elapsed").textContent = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    const avg = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+    const max = durations.length ? Math.max(...durations) : 0;
+    const sorted = [...durations].sort((a, b) => a - b);
+    const p95 = sorted.length ? sorted[Math.floor(sorted.length * 0.95)] : 0;
+    $("#lt-metrics").innerHTML = `
+      <div class="metric-card"><span class="label">成功率</span><span class="value ${failed === 0 ? "ok" : "err"}">${((success / completed) * 100).toFixed(1)}%</span></div>
+      <div class="metric-card"><span class="label">平均耗时</span><span class="value">${avg} ms</span></div>
+      <div class="metric-card"><span class="label">P95</span><span class="value">${p95} ms</span></div>
+      <div class="metric-card"><span class="label">最大耗时</span><span class="value">${max} ms</span></div>
+    `;
+    if (completed < total) {
+      setTimeout(tick, 120);
+    } else {
+      STATE.loadTestRunning = false;
+      toast(`压测完成: ${success}/${total} 成功, 平均 ${avg}ms`, "success");
+      setTimeout(() => renderLoadTestView(), 600);
+    }
+  };
+  tick();
+}
+
+function stopLoadTest() {
+  STATE.loadTestRunning = false;
+  toast("压测已停止", "success");
+  renderLoadTestView();
+}
+
+/* ============================================================
+   JSON 渲染
+   ============================================================ */
+function renderJSON(value, depth = 0, keyName = null, containerId = null) {
+  if (value === null) return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="null">null</span>`;
+  const t = typeof value;
+  if (t === "string") return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="string">"${escapeHTML(value)}"</span>`;
+  if (t === "number") return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="number">${value}</span>`;
+  if (t === "boolean") return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="boolean">${value}</span>`;
+  if (Array.isArray(value)) return renderArray(value, depth, keyName, containerId);
+  if (t === "object") return renderObject(value, depth, keyName, containerId);
+  return "";
+}
+
+function renderObject(obj, depth, keyName, parentId) {
+  const entries = Object.entries(obj);
+  if (entries.length === 0) {
+    const id = nextId();
+    return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="toggle" data-toggle="${id}"></span><span class="bracket">{</span><span class="bracket">}</span><div id="${id}" class="collapsed-content"></div>`;
+  }
+  const id = nextId();
+  let inner = "";
+  for (const [k, v] of entries) {
+    inner += `<div style="padding-left: 16px;">${renderJSON(v, depth + 1, k, id)}</div>`;
+  }
+  const header = `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="toggle" data-toggle="${id}"></span><span class="bracket">{</span><span class="muted" style="color: var(--soft); margin-left:4px;">${entries.length} 项</span>`;
+  const full = `${header}</div><div id="${id}" class="json-children">${inner}</div><div style="padding-left: 16px;"><span class="bracket">}</span>`;
+  return full;
+}
+
+function renderArray(arr, depth, keyName, parentId) {
+  if (arr.length === 0) {
+    const id = nextId();
+    return `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="toggle" data-toggle="${id}"></span><span class="bracket">[</span><span class="bracket">]</span><div id="${id}" class="collapsed-content"></div>`;
+  }
+  const id = nextId();
+  let inner = "";
+  for (const v of arr) {
+    inner += `<div style="padding-left: 16px;">${renderJSON(v, depth + 1, null, id)}</div>`;
+  }
+  const header = `<span class="key">"${escapeHTML(keyName ?? "")}"</span>: <span class="toggle" data-toggle="${id}"></span><span class="bracket">[</span><span class="muted" style="color: var(--soft); margin-left:4px;">${arr.length} 项</span>`;
+  const full = `${header}</div><div id="${id}" class="json-children">${inner}</div><div style="padding-left: 16px;"><span class="bracket">]</span>`;
+  return full;
+}
+
+let __idc = 0;
+function nextId() { return "j" + (++__idc); }
+
+function bindToggles() {
+  $$(".json-view .toggle").forEach((t) => {
+    t.addEventListener("click", () => {
+      const id = t.dataset.toggle;
+      const target = document.getElementById(id);
+      if (!target) return;
+      t.classList.toggle("collapsed");
+      if (t.classList.contains("collapsed")) {
+        target.dataset.prevDisplay = target.style.display || "";
+        target.style.display = "none";
+        // 下一行的 close bracket 也隐藏
+        const closeBrackets = target.parentElement.querySelectorAll(":scope > .bracket");
+        // 不需要, 我们的实现是 inline 闭合
+      } else {
+        target.style.display = target.dataset.prevDisplay || "";
+      }
+    });
+  });
+}
+
+/* 响应搜索高亮 */
+function bindSearchHighlight() {
+  const search = STATE.respSearch.trim();
+  if (!search) return;
+  const root = $("#json-view") || $("#resp-content");
+  if (!root) return;
+  walkTextNodes(root, (node) => {
+    const text = node.nodeValue;
+    let idx = text.toLowerCase().indexOf(search.toLowerCase());
+    if (idx < 0) return;
+    const frag = document.createDocumentFragment();
+    let lastIdx = 0;
+    while (idx >= 0) {
+      if (idx > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, idx)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(idx, idx + search.length);
+      frag.appendChild(mark);
+      lastIdx = idx + search.length;
+      idx = text.toLowerCase().indexOf(search.toLowerCase(), lastIdx);
+    }
+    if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+    node.parentNode.replaceChild(frag, node);
+  });
+}
+
+function walkTextNodes(node, fn) {
+  if (!node) return;
+  if (node.nodeType === 3) { fn(node); return; }
+  if (node.nodeType !== 1) return;
+  if (node.tagName === "MARK" || node.classList?.contains("toggle")) return;
+  for (const child of Array.from(node.childNodes)) walkTextNodes(child, fn);
+}
+
+function drawSparkline(data) {
+  const w = 40, h = 10;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = pts[pts.length - 1].split(",");
+  $("#sparkline-svg").innerHTML = `
+    <polyline points="${pts.join(" ")}" fill="none" stroke="var(--primary)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+    <circle cx="${last[0]}" cy="${last[1]}" r="1.6" fill="var(--primary)" />
+  `;
+}
+
+/* ============================================================
+   Context menu (右键菜单)
+   ============================================================ */
+function showContextMenu(x, y, items) {
+  closeContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  menu.innerHTML = items.map((it, i) => {
+    if (it.divider) return `<div class="ctx-divider"></div>`;
+    return `<button class="ctx-item ${it.danger ? "danger" : ""} ${it.disabled ? "disabled" : ""}" data-idx="${i}">
+      <span class="icon">${it.icon || ""}</span>
+      <span>${escapeHTML(it.label)}</span>
+    </button>`;
+  }).join("");
+  // 防止越界
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+  menu.style.left = x + "px";
+  menu.style.top = y + "px";
+  menu._items = items;
+  menu.querySelectorAll(".ctx-item").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      const it = items[idx];
+      if (it.disabled) return;
+      closeContextMenu();
+      setTimeout(() => it.onClick?.(), 10);
+    });
+  });
+  STATE._ctxMenu = menu;
+}
+
+function closeContextMenu() {
+  if (STATE._ctxMenu) {
+    STATE._ctxMenu.remove();
+    STATE._ctxMenu = null;
+  }
+}
+
+/* ============================================================
+   选择历史 / 发送请求
+   ============================================================ */
+function selectSavedRequest(reqId) {
+  const found = findReq(reqId);
+  if (!found) return;
+  const { req } = found;
+  STATE.activeRequestId = req.id;
+  STATE.activeMethod = req.method;
+  STATE.url = req.url;
+  $("#url-input").value = req.url;
+  $("#method-select").value = req.method;
+  $("#req-name-chip").textContent = req.name;
+  STATE.requestDraft.name = req.name;
+  // 还原响应 (从 lastResponseSnapshot 加载, 没有就空)
+  if (req.lastResponseSnapshot) {
+    renderResponse(req.lastResponseSnapshot);
+  } else if (req.lastStatus != null) {
+    renderResponse({
+      status: req.lastStatus, statusText: req.lastStatus >= 200 && req.lastStatus < 300 ? "OK" : "Error",
+      durationMs: req.lastDurationMs || 0, sizeBytes: 256, contentType: "application/json",
+      finalUrl: req.url, requestId: "cached-" + req.id,
+      headers: [["content-type", "application/json", true], ["x-request-id", "cached-" + req.id, false]],
+      body: { cached: true, note: "仅缓存了摘要, 重新发送可获取完整响应", originalStatus: req.lastStatus, originalMs: req.lastDurationMs, executedAt: req.lastExecutedAt },
+    });
+  } else {
+    renderEmpty();
+  }
+  // 高亮
+  $$(".req-item").forEach((el) => el.classList.toggle("active", el.dataset.reqId === reqId));
+  if (STATE.reqTab !== "params" && STATE.reqTab !== "headers" && STATE.reqTab !== "body") {
+    switchReqTab("params");
+  }
+  switchRespTab("body");
+  markDirty(false);
+}
+
+function sendRequest() {
+  const btn = $("#send-btn");
+  const cancel = $("#cancel-btn");
+  const method = $("#method-select").value;
+  const url = $("#url-input").value.trim();
+  if (!url) {
+    toast("请填写 URL", "error");
+    return;
+  }
+  if (!/^https?:\/\//.test(url)) {
+    toast("URL 必须以 http:// 或 https:// 开头", "error");
+    return;
+  }
+  STATE.isSending = true;
+  btn.classList.add("sending");
+  cancel.style.display = "inline-flex";
+  renderLoading();
+  const startedAt = Date.now();
+  STATE._sendTimer = setTimeout(() => {
+    STATE.isSending = false;
+    btn.classList.remove("sending");
+    cancel.style.display = "none";
+    const key = `${method}::${url}`;
+    const mock = MOCK_RESPONSES[key] || {
+      status: 200, statusText: "OK (Mock)", durationMs: Date.now() - startedAt,
+      sizeBytes: 312 + Math.floor(Math.random() * 1024), contentType: "application/json",
+      finalUrl: url, requestId: "mock-" + Date.now(),
+      headers: [["content-type", "application/json", true], ["x-request-id", "mock-" + Date.now(), false]],
+      body: { mocked: true, method, url, ts: new Date().toISOString(), sent: { params: STATE.requestDraft.params.filter(p => p.enabled), body: STATE.requestDraft.bodyMode === "none" ? null : STATE.requestDraft.bodyText } },
+    };
+
+    // 按 method+url 查找/更新/新增到默认集合
+    let target = findReqByUrlKey(method, url);
+    const defCol = STATE.collections.find((c) => c.isDefault) || STATE.collections[0];
+    if (!target) {
+      // 新建到默认集合
+      const id = "r-" + Date.now();
+      const newReq = {
+        id, method, name: STATE.requestDraft.name || url.slice(0, 40), url,
+        lastStatus: mock.status, lastDurationMs: mock.durationMs, lastExecutedAt: new Date().toISOString(),
+        lastResponseSnapshot: mock,
+      };
+      defCol.requests.unshift(newReq);
+      target = { req: newReq, collection: defCol };
+      toast(`已添加到 ${defCol.name}`, "success");
+    } else {
+      // 更新已有请求的快照
+      target.req.lastStatus = mock.status;
+      target.req.lastDurationMs = mock.durationMs;
+      target.req.lastExecutedAt = new Date().toISOString();
+      target.req.lastResponseSnapshot = mock;
+      // 把这条移到所在集合的第一个
+      target.collection.requests = target.collection.requests.filter((r) => r.id !== target.req.id);
+      target.collection.requests.unshift(target.req);
+    }
+    STATE.activeRequestId = target.req.id;
+    renderCollections();
+    renderResponse(mock);
+    toast(`${method} ${mock.status} ${mock.statusText} · ${mock.durationMs}ms`, mock.status >= 400 ? "error" : "success");
+  }, 850);
+}
+
+function cancelRequest() {
+  if (!STATE.isSending) return;
+  clearTimeout(STATE._sendTimer);
+  STATE.isSending = false;
+  $("#send-btn").classList.remove("sending");
+  $("#cancel-btn").style.display = "none";
+  renderEmpty();
+  toast("请求已取消", "success");
+}
+
+function copyResp() {
+  if (!currentResponse) return;
+  const text = typeof currentResponse.body === "string" ? currentResponse.body : JSON.stringify(currentResponse.body, null, 2);
+  navigator.clipboard.writeText(text);
+  toast("响应已复制到剪贴板", "success");
+}
+
+/* ============================================================
+   保存 / 导入 cURL / 帮助 / 环境
+   ============================================================ */
+function saveRequest() {
+  promptModal({
+    title: "保存请求",
+    label: "请求名称",
+    placeholder: STATE.requestDraft.name || "新请求",
+    defaultValue: STATE.requestDraft.name,
+    confirmText: "保存",
+    hint: "选择目标集合, 或新建一个",
+    extraSelect: {
+      label: "集合",
+      options: STATE.collections.map((c) => ({ value: c.id, label: c.name })),
+      defaultValue: STATE.collections[0]?.id,
+    },
+    onConfirm: (name, collectionId) => {
+      if (!name) return;
+      const col = STATE.collections.find((c) => c.id === collectionId);
+      if (!col) return;
+      col.requests.push({
+        id: "r-" + Date.now(),
+        method: STATE.activeMethod,
+        name,
+        url: STATE.url,
+      });
+      STATE.requestDraft.name = name;
+      $("#req-name-chip").textContent = name;
+      markDirty(false);
+      toast(`已保存到 "${col.name}"`, "success");
+      if (STATE.sidebarTab === "collections") renderCollections();
+    },
+  });
+}
+
+function importCurl() {
+  const example = `curl -X POST 'http://iot.iotim.com/ehong/tool/GetMemberInfo' \\
+  -H 'Authorization: Bearer demo-token' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"memberId": "demo_user_001"}'`;
+  promptModal({
+    title: "导入 cURL 命令",
+    label: "cURL 命令",
+    placeholder: example,
+    defaultValue: "",
+    confirmText: "解析并导入",
+    multiline: true,
+    onConfirm: (text) => {
+      if (!text || !text.trim().startsWith("curl")) {
+        toast("请输入有效的 cURL 命令", "error");
+        return;
+      }
+      // 简单 mock 解析
+      const m = text.match(/-X\s+['"]?(\w+)['"]?/i) || text.match(/curl\s+['"]?(-?\w+)['"]?/i);
+      const method = m ? m[1].toUpperCase().replace(/^['"-]/, "") : "GET";
+      const um = text.match(/['"](https?:\/\/[^'"]+)['"]/);
+      const url = um ? um[1] : STATE.url;
+      const bodyMatch = text.match(/-d\s+['"](.+?)['"]/s);
+      $("#method-select").value = method;
+      $("#url-input").value = url;
+      STATE.activeMethod = method;
+      STATE.url = url;
+      if (bodyMatch) {
+        STATE.requestDraft.bodyMode = "json";
+        STATE.requestDraft.bodyText = bodyMatch[1];
+        if (STATE.reqTab !== "body") STATE.reqTab = "body";
+        switchReqTab("body");
+      }
+      markDirty(true);
+      toast(`cURL 解析完成: ${method} ${url.slice(0, 40)}…`, "success");
+    },
+  });
+}
+
+function buildCurlCommand() {
+  const method = STATE.activeMethod;
+  const url = STATE.url || "http://localhost";
+  const lines = [`curl -X ${method} '${url}'`];
+  // headers (only enabled + non-empty key)
+  const enabledHeaders = STATE.requestDraft.headers.filter((h) => h.enabled && h.key.trim());
+  for (const h of enabledHeaders) {
+    lines.push(`  -H '${escapeShellSingle(h.key)}: ${escapeShellSingle(h.value)}'`);
+  }
+  // params → 拼到 URL (或作为 -G --data-urlencode)
+  const enabledParams = STATE.requestDraft.params.filter((p) => p.enabled && p.key.trim());
+  if (enabledParams.length > 0) {
+    const qs = enabledParams.map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
+    const sep = url.includes("?") ? "&" : "?";
+    lines[0] = `curl -X ${method} '${url}${sep}${qs}'`;
+  }
+  // body
+  if (["POST", "PUT", "PATCH"].includes(method) && STATE.requestDraft.bodyMode !== "none" && STATE.requestDraft.bodyText.trim()) {
+    lines.push(`  -d '${escapeShellSingle(STATE.requestDraft.bodyText)}'`);
+  }
+  return lines.join(" \\\n");
+}
+
+function escapeShellSingle(s) {
+  return String(s).replace(/'/g, `'\\''`);
+}
+
+function exportCurl() {
+  if (!STATE.url.trim()) {
+    toast("请先填写 URL", "error");
+    return;
+  }
+  const cmd = buildCurlCommand();
+  const safeName = (STATE.requestDraft.name || "request").replace(/[^\w\-]/g, "_");
+  const body = `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <span style="font-size:12px; color:var(--muted);">当前请求:</span>
+      ${methodPillHTML(STATE.activeMethod)}
+      <span style="font-family:'Cascadia Code',monospace; font-size:12px; color:var(--text);">${escapeHTML(STATE.url)}</span>
+    </div>
+    <textarea id="curl-output" readonly style="width:100%; min-height:220px; padding:10px 12px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); font-family:'Cascadia Code', monospace; font-size:12px; line-height:1.55; resize:vertical;">${escapeHTML(cmd)}</textarea>
+    <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
+      <button class="btn-secondary" id="curl-copy" style="height:28px;">📋 复制到剪贴板</button>
+      <button class="btn-secondary" id="curl-download" style="height:28px;">⬇ 下载 .sh 文件</button>
+      <button class="btn-secondary" id="curl-powershell" style="height:28px;">⊞ 复制为 PowerShell</button>
+      <button class="btn-secondary" id="curl-fetch" style="height:28px;">🌐 复制为 fetch()</button>
+      <span style="flex:1;"></span>
+      <span style="font-size:11px; color:var(--muted); align-self:center;">支持 bash · zsh · powershell · 浏览器</span>
+    </div>
+    <div style="margin-top:10px; padding:8px 10px; background:var(--surface-2); border:1px solid var(--border); border-radius:4px; font-size:11px; color:var(--muted); line-height:1.6;">
+      💡 已自动包含启用的 Headers 和 Params；Body 仅在非 GET/DELETE 时附加。变量 <code style="background:var(--bg); padding:1px 4px; border-radius:2px;">{{baseUrl}}</code> / <code style="background:var(--bg); padding:1px 4px; border-radius:2px;">{{token}}</code> 会保留原样。
+    </div>
+  `;
+  modal({
+    title: "导出 cURL 命令",
+    body,
+    confirmText: "关闭",
+    cancelText: null,
+    onConfirm: () => {},
+  });
+  // 隐藏取消按钮
+  setTimeout(() => {
+    const cancelBtn = $("#modal-root .modal-foot [data-cancel]");
+    if (cancelBtn) cancelBtn.style.display = "none";
+  }, 0);
+
+  const out = () => $("#curl-output").value;
+  $("#curl-copy").addEventListener("click", () => {
+    navigator.clipboard.writeText(out());
+    toast("cURL 已复制到剪贴板", "success");
+  });
+  $("#curl-download").addEventListener("click", () => {
+    const blob = new Blob([`#!/usr/bin/env bash\n\n${out()}\n`], { type: "text/x-shellscript" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safeName}.sh`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast(`已下载: ${safeName}.sh`, "success");
+  });
+  $("#curl-powershell").addEventListener("click", () => {
+    const psCmd = out()
+      .replace(/^curl/, "Invoke-WebRequest -UseBasicParsing")
+      .replace(/-X (\w+)/, "-Method '$1'")
+      .replace(/-H '([^']+)'/g, "-Headers @{$([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$(echo -n \"$1\" | base64)')))=''}")
+      .replace(/-d '(.+?)'/s, "-Body '$1'");
+    navigator.clipboard.writeText(psCmd);
+    toast("已复制为 PowerShell", "success");
+  });
+  $("#curl-fetch").addEventListener("click", () => {
+    const m = STATE.activeMethod.toLowerCase();
+    const headersObj = {};
+    for (const h of STATE.requestDraft.headers.filter((h) => h.enabled && h.key.trim())) {
+      headersObj[h.key] = h.value;
+    }
+    const fetchOpts = { method: m, headers: headersObj };
+    if (["post", "put", "patch"].includes(m) && STATE.requestDraft.bodyMode !== "none" && STATE.requestDraft.bodyText.trim()) {
+      fetchOpts.body = STATE.requestDraft.bodyText;
+    }
+    const fetchStr = `const res = await fetch(${JSON.stringify(STATE.url)}, ${JSON.stringify(fetchOpts, null, 2)});\nconst data = await res.json();\nconsole.log(data);`;
+    navigator.clipboard.writeText(fetchStr);
+    toast("已复制为 fetch()", "success");
+  });
+}
+
+function showHelp() {
+  const items = [
+    { keys: ["Ctrl", "Enter"], desc: "发送请求" },
+    { keys: ["Esc"], desc: "取消请求 / 关闭弹窗" },
+    { keys: ["Ctrl", "S"], desc: "保存请求" },
+    { keys: ["Ctrl", "Shift", "C"], desc: "复制响应" },
+    { keys: ["Ctrl", "F"], desc: "搜索响应内容" },
+    { keys: ["Ctrl", "N"], desc: "新建请求" },
+    { keys: ["Ctrl", "/"], desc: "显示本帮助" },
+    { keys: ["Ctrl", "J"], desc: "切换深色/浅色" },
+    { keys: ["Ctrl", "K"], desc: "聚焦 URL 输入框" },
+  ];
+  const body = `
+    <div style="font-size:13px; font-weight:600; margin-bottom:12px;">⌨ 键盘快捷键</div>
+    <div class="help-shortcut-grid">
+      ${items.map((it) => `
+        <div class="help-shortcut-row">
+          <div class="keys">${it.keys.map((k) => `<kbd>${k}</kbd>`).join(" + ")}</div>
+          <div class="desc">${escapeHTML(it.desc)}</div>
+        </div>
+      `).join("")}
+    </div>
+    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">💡 提示</div>
+      <ul style="margin:0; padding-left:20px; color:var(--muted); font-size:12px; line-height:1.7;">
+        <li>历史记录按 URL 去重, 同一 URL 只保留最新一次</li>
+        <li>响应 JSON 可点击 ▾ 折叠嵌套对象/数组</li>
+        <li>响应体搜索会自动高亮所有匹配片段</li>
+        <li>切换环境后, 请求中的 <code>{{baseUrl}}</code> 等变量会自动展开</li>
+      </ul>
+    </div>
+  `;
+  modal({
+    title: "快捷键与帮助",
+    body,
+    confirmText: "知道了",
+    onConfirm: () => {},
+  });
+}
+
+function editEnvModal(env, isNew = false) {
+  const vars = Object.entries(env.variables);
+  const body = `
+    <div class="field-block">
+      <label>环境名称</label>
+      <input type="text" id="env-name" value="${escapeHTML(env.name)}" />
+    </div>
+    <div style="font-size:12px; font-weight:600; color:var(--text); margin:12px 0 8px;">变量</div>
+    ${vars.map(([k, v], i) => `
+      <div class="field-block" style="display:grid; grid-template-columns: 1fr 1.5fr auto; gap:6px; align-items:center;">
+        <input type="text" value="${escapeHTML(k)}" placeholder="key" data-var-key="${i}" />
+        <input type="text" value="${escapeHTML(v)}" placeholder="value" data-var-val="${i}" />
+        <button class="del-btn" data-var-del="${i}" title="删除" style="width:28px;height:28px;border:1px solid var(--border); border-radius:4px; background:transparent; color:var(--soft);">✕</button>
+      </div>
+    `).join("")}
+    <button class="add-row-btn" id="env-add-var">+ 添加变量</button>
+  `;
+  modal({
+    title: isNew ? "新建环境" : `编辑环境: ${env.name}`,
+    body,
+    confirmText: "保存",
+    onConfirm: () => {
+      const newName = $("#env-name").value.trim() || env.name;
+      const newVars = {};
+      $$("[data-var-key]").forEach((inp) => {
+        const i = inp.dataset.varKey;
+        const k = inp.value.trim();
+        const v = $(`[data-var-val="${i}"]`).value;
+        if (k) newVars[k] = v;
+      });
+      if (isNew) {
+        STATE.environments.push({ id: env.id, name: newName, active: false, variables: newVars });
+      } else {
+        env.name = newName;
+        env.variables = newVars;
+      }
+      renderEnvMenu();
+      renderEnvironments();
+      toast(`环境已保存: ${newName}`, "success");
+    },
+  });
+  setTimeout(() => {
+    $("#env-add-var")?.addEventListener("click", () => {
+      const next = $$("[data-var-key]").length;
+      const wrap = $("#env-add-var").parentElement;
+      const div = document.createElement("div");
+      div.className = "field-block";
+      div.style.cssText = "display:grid; grid-template-columns: 1fr 1.5fr auto; gap:6px; align-items:center;";
+      div.innerHTML = `
+        <input type="text" placeholder="key" data-var-key="${next}" />
+        <input type="text" placeholder="value" data-var-val="${next}" />
+        <button class="del-btn" data-var-del="${next}" title="删除" style="width:28px;height:28px;border:1px solid var(--border); border-radius:4px; background:transparent; color:var(--soft);">✕</button>
+      `;
+      wrap.insertBefore(div, $("#env-add-var"));
+      div.querySelector("[data-var-key]").focus();
+    });
+    $$("[data-var-del]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const row = btn.parentElement;
+        row.remove();
+      });
+    });
+  }, 50);
+}
+
+/* ============================================================
+   Modal / Toast
+   ============================================================ */
+function modal({ title, body, confirmText = "确定", cancelText = "取消", onConfirm, onCancel }) {
+  const root = $("#modal-root");
+  const layer = document.createElement("div");
+  layer.className = "modal-layer";
+  layer.innerHTML = `
+    <div class="modal" role="dialog">
+      <div class="modal-head">
+        <div>
+          <h3>${escapeHTML(title)}</h3>
+        </div>
+        <button class="icon-btn" data-close style="font-size:14px;">✕</button>
+      </div>
+      <div class="modal-body">${body}</div>
+      <div class="modal-foot">
+        <button class="btn-secondary" data-cancel>${escapeHTML(cancelText)}</button>
+        <button class="btn-primary" data-confirm>${escapeHTML(confirmText)}</button>
+      </div>
+    </div>
+  `;
+  root.appendChild(layer);
+  const close = () => root.removeChild(layer);
+  layer.querySelector("[data-close]").addEventListener("click", () => { close(); onCancel?.(); });
+  layer.querySelector("[data-cancel]").addEventListener("click", () => { close(); onCancel?.(); });
+  layer.querySelector("[data-confirm]").addEventListener("click", () => { close(); onConfirm?.(); });
+  layer.addEventListener("click", (e) => { if (e.target === layer) { close(); onCancel?.(); } });
+  setTimeout(() => layer.querySelector("input, textarea, select")?.focus(), 30);
+}
+
+function confirmModal({ title, message, confirmText = "确定", danger = false, onConfirm, onCancel }) {
+  const body = `
+    <div style="padding: 4px 0 12px; color: var(--text); line-height: 1.6; font-size: 13px;">${escapeHTML(message)}</div>
+  `;
+  const root = $("#modal-root");
+  const layer = document.createElement("div");
+  layer.className = "modal-layer";
+  layer.innerHTML = `
+    <div class="modal" role="dialog" style="width: min(440px, 100%);">
+      <div class="modal-head">
+        <div>
+          <h3>${escapeHTML(title)}</h3>
+        </div>
+        <button class="icon-btn" data-close style="font-size:14px;">✕</button>
+      </div>
+      <div class="modal-body">${body}</div>
+      <div class="modal-foot">
+        <button class="btn-secondary" data-cancel>取消</button>
+        <button class="${danger ? "btn-danger" : "btn-primary"}" data-confirm>${escapeHTML(confirmText)}</button>
+      </div>
+    </div>
+  `;
+  root.appendChild(layer);
+  const close = () => root.removeChild(layer);
+  layer.querySelector("[data-close]").addEventListener("click", () => { close(); onCancel?.(); });
+  layer.querySelector("[data-cancel]").addEventListener("click", () => { close(); onCancel?.(); });
+  layer.querySelector("[data-confirm]").addEventListener("click", () => { close(); onConfirm?.(); });
+  layer.addEventListener("click", (e) => { if (e.target === layer) { close(); onCancel?.(); } });
+  setTimeout(() => layer.querySelector("[data-confirm]")?.focus(), 30);
+}
+
+function promptModal({ title, label, placeholder = "", defaultValue = "", confirmText = "确定", multiline = false, hint = "", extraSelect = null, onConfirm }) {
+  const body = `
+    <div class="field-block">
+      <label>${escapeHTML(label)}</label>
+      ${multiline
+        ? `<textarea id="pm-input" placeholder="${escapeHTML(placeholder)}">${escapeHTML(defaultValue)}</textarea>`
+        : `<input type="text" id="pm-input" placeholder="${escapeHTML(placeholder)}" value="${escapeHTML(defaultValue)}" />`}
+      ${hint ? `<div style="font-size:11px; color:var(--muted);">${escapeHTML(hint)}</div>` : ""}
+    </div>
+    ${extraSelect ? `
+      <div class="field-block">
+        <label>${escapeHTML(extraSelect.label)}</label>
+        <select id="pm-select">
+          ${extraSelect.options.map((o) => `<option value="${escapeHTML(o.value)}" ${o.value === extraSelect.defaultValue ? "selected" : ""}>${escapeHTML(o.label)}</option>`).join("")}
+        </select>
+      </div>
+    ` : ""}
+  `;
+  modal({
+    title, body, confirmText,
+    onConfirm: () => {
+      const v = $("#pm-input").value;
+      const sel = $("#pm-select")?.value;
+      onConfirm(v, sel);
+    },
+  });
+  setTimeout(() => {
+    const inp = $("#pm-input");
+    inp?.focus();
+    inp?.select?.();
+    inp?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !multiline) {
+        e.preventDefault();
+        $("#modal-root .modal-foot [data-confirm]").click();
+      }
+    });
+  }, 30);
+}
+
+let toastTimer = null;
+function toast(msg, kind = "info") {
+  const root = $("#toast-root");
+  let el = root.querySelector(".toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "toast";
+    root.appendChild(el);
+  }
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  requestAnimationFrame(() => el.classList.add("show"));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+}
+
+/* ============================================================
+   主题 / dirty / 工具函数
+   ============================================================ */
+function toggleTheme() {
+  STATE.theme = STATE.theme === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", STATE.theme);
+  $("#theme-icon").textContent = STATE.theme === "dark" ? "🌙" : "☀️";
+}
+
+function markDirty(d) {
+  STATE.isDirty = d;
+  $("#send-btn").classList.toggle("dirty", d);
+  $("#dirty-chip").style.display = d ? "inline-flex" : "none";
+}
+
+function switchSidebarTab(tab) {
+  STATE.sidebarTab = tab;
+  $$(".tab-btn[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  renderSidebar();
+}
+
+function switchReqTab(tab) {
+  STATE.reqTab = tab;
+  $$(".tab-btn[data-req-tab]").forEach((b) => b.classList.toggle("active", b.dataset.reqTab === tab));
+  renderReqTab();
+  if (tab === "params" || tab === "headers") bindKVEditor();
+}
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+function init() {
+  // 主题
+  $("#theme-toggle").addEventListener("click", toggleTheme);
+
+  // sidebar tabs
+  $$(".tab-btn[data-tab]").forEach((b) => b.addEventListener("click", () => switchSidebarTab(b.dataset.tab)));
+
+  // req tabs
+  $$(".tab-btn[data-req-tab]").forEach((b) => b.addEventListener("click", () => switchReqTab(b.dataset.reqTab)));
+
+  // resp tabs
+  $$(".resp-tab").forEach((b) => b.addEventListener("click", () => switchRespTab(b.dataset.respTab)));
+
+  // 搜索 (集合内 URL/name)
+  $("#search-input").addEventListener("input", (e) => {
+    STATE.sidebarSearch = e.target.value;
+    $("#search-wrap").classList.toggle("has-value", e.target.value.length > 0);
+    if (STATE.sidebarTab === "collections") renderCollections();
+  });
+  $("#search-clear").addEventListener("click", () => {
+    $("#search-input").value = "";
+    STATE.sidebarSearch = "";
+    $("#search-wrap").classList.remove("has-value");
+    if (STATE.sidebarTab === "collections") renderCollections();
+    $("#search-input").focus();
+  });
+
+  // 响应搜索
+  $("#resp-search-input").addEventListener("input", (e) => {
+    STATE.respSearch = e.target.value;
+    if (currentResponse) renderBodyView();
+  });
+
+  // 响应模式 toggle
+  $$(".toggle-group button").forEach((b) => b.addEventListener("click", () => {
+    $$(".toggle-group button").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    STATE.responseMode = b.dataset.mode;
+    if (currentResponse && STATE.respTab === "body") renderBodyView();
+  }));
+
+  // 工具按钮
+  $("#btn-format-json").addEventListener("click", () => {
+    if (!currentResponse) return toast("没有可格式化的响应", "error");
+    try {
+      const obj = typeof currentResponse.body === "string" ? JSON.parse(currentResponse.body) : currentResponse.body;
+      currentResponse.body = JSON.parse(JSON.stringify(obj)); // 重新生成
+      renderBodyView();
+      toast("JSON 已格式化", "success");
+    } catch { toast("当前响应不是合法 JSON", "error"); }
+  });
+  $("#btn-copy-resp").addEventListener("click", copyResp);
+  $("#btn-load").addEventListener("click", () => switchRespTab("loadtest"));
+  $("#btn-save").addEventListener("click", saveRequest);
+  $("#btn-curl").addEventListener("click", importCurl);
+  $("#btn-export-curl").addEventListener("click", exportCurl);
+  $("#btn-help").addEventListener("click", showHelp);
+
+  // 新建
+  $("#new-req-btn").addEventListener("click", () => {
+    $("#url-input").value = "";
+    $("#method-select").value = "GET";
+    STATE.activeMethod = "GET";
+    STATE.url = "";
+    STATE.requestDraft = { name: "新请求", params: [], headers: [], bodyMode: "none", bodyText: "" };
+    STATE.requestDraft.params.push({ enabled: true, key: "", value: "" });
+    STATE.requestDraft.headers.push({ enabled: true, key: "", value: "" });
+    renderReqTab();
+    if (STATE.reqTab === "params" || STATE.reqTab === "headers") bindKVEditor();
+    markDirty(true);
+    $("#req-name-chip").textContent = "新请求";
+    renderEmpty();
+    toast("新建空白请求", "success");
+  });
+
+  // 发送 / 取消
+  $("#send-btn").addEventListener("click", sendRequest);
+  $("#cancel-btn").addEventListener("click", cancelRequest);
+
+  // method/url 改动 → dirty
+  $("#method-select").addEventListener("change", (e) => {
+    STATE.activeMethod = e.target.value;
+    markDirty(true);
+  });
+  $("#url-input").addEventListener("input", (e) => {
+    STATE.url = e.target.value;
+    markDirty(true);
+  });
+
+  // 环境 dropdown
+  $("#env-trigger").addEventListener("click", (e) => {
+    e.stopPropagation();
+    $("#env-dropdown").classList.toggle("open");
+  });
+  document.addEventListener("click", () => {
+    $("#env-dropdown").classList.remove("open");
+    closeContextMenu();
+  });
+  document.addEventListener("contextmenu", (e) => {
+    // 只有带 data-context-* 的元素才显示菜单, 其他地方关闭
+    if (!e.target.closest("[data-context-collection], [data-context-req]")) {
+      closeContextMenu();
+    }
+  });
+  renderEnvMenu();
+
+  // meta chips 点击复制
+  $("#meta-time").addEventListener("click", () => {
+    if (!currentResponse) return;
+    navigator.clipboard.writeText(`${currentResponse.durationMs} ms`);
+    toast(`已复制耗时: ${currentResponse.durationMs} ms`, "success");
+  });
+  $("#meta-size").addEventListener("click", () => {
+    if (!currentResponse) return;
+    navigator.clipboard.writeText(`${currentResponse.sizeBytes} B`);
+    toast(`已复制大小: ${currentResponse.sizeBytes} B`, "success");
+  });
+  $("#meta-ctype").addEventListener("click", () => {
+    if (!currentResponse) return;
+    navigator.clipboard.writeText(currentResponse.contentType || "");
+    toast(`已复制 Content-Type`, "success");
+  });
+
+  // 全局快捷键
+  document.addEventListener("keydown", (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === "Enter") { e.preventDefault(); sendRequest(); }
+    else if (mod && e.shiftKey && e.key.toLowerCase() === "c") { e.preventDefault(); copyResp(); }
+    else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveRequest(); }
+    else if (mod && e.key.toLowerCase() === "n") { e.preventDefault(); $("#new-req-btn").click(); }
+    else if (mod && e.key.toLowerCase() === "/") { e.preventDefault(); showHelp(); }
+    else if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); toggleTheme(); }
+    else if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); $("#url-input").focus(); $("#url-input").select(); }
+    else if (mod && e.key.toLowerCase() === "f") {
+      // 仅在响应有内容时
+      if (currentResponse) { e.preventDefault(); $("#resp-search-input").focus(); $("#resp-search-input").select(); }
+    }
+    else if (e.key === "Escape") {
+      if ($("#modal-root").firstChild) { $("#modal-root").innerHTML = ""; return; }
+      cancelRequest();
+    }
+  });
+
+  // 初始化渲染
+  renderSidebar();
+  renderReqTab();
+  switchReqTab(STATE.reqTab);
+  renderEmpty();
+  markDirty(true);
+
+  // 预填每个有 lastStatus 的 req 的 lastResponseSnapshot
+  for (const c of STATE.collections) {
+    for (const r of c.requests) {
+      if (r.lastStatus != null && !r.lastResponseSnapshot) {
+        const key = `${r.method}::${r.url}`;
+        const mock = MOCK_RESPONSES[key];
+        if (mock) {
+          r.lastResponseSnapshot = {
+            ...mock,
+            status: r.lastStatus,
+            durationMs: r.lastDurationMs,
+            finalUrl: r.url,
+            requestId: "snapshot-" + r.id,
+            headers: [["content-type", mock.contentType, true], ["x-request-id", "snapshot-" + r.id, false], ...mock.headers.slice(1)],
+          };
+        }
+      }
+    }
+  }
+
+  // 默认显示 iotim (集合里第一条)
+  setTimeout(() => {
+    selectSavedRequest("r-iotim");
+    setTimeout(() => toast("💡 提示: 右击集合/请求可看更多操作; 拖拽请求可移至其它集合", "info"), 600);
+  }, 300);
+}
+
+document.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>

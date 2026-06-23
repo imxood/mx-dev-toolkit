@@ -2,7 +2,7 @@
   "name": "mx-dev-toolkit",
   "displayName": "Mx Dev Toolkit",
   "description": "Mx personal developer toolkit for daily VSCode workflows",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "maxu",
   "repository": "https://github.com/imxood/mx-dev-toolkit",
   "engines": {

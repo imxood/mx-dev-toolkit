@@ -1,6 +1,6 @@
 # HTTP 客户端设计
 
-最后更新: 2026-04-17
+最后更新: 2026-06-23
 状态: 设计
 
 ## 1. 文档定位
@@ -16,33 +16,22 @@
 
 ## 2. 当前结论
 
-HTTP Client 已经完成 React Webview 重构, 并进一步把高频交互收敛到单一工作台页面。
+HTTP Client 已经切到 `集合驱动 + 快照内化` 的新数据模型, 并完成 React 工作台重写。
+
+新模型的核心变化:
+
+- 集合直接挂载 `requests`, 不再有独立的 `requests[]` 平行数组
+- 每个 `HttpRequestEntity` 自带 `lastStatus / lastDurationMs / lastExecutedAt / lastResponseSnapshot` 四个字段, 历史响应快照内化到 req 上
+- 默认集合 (`c-default` / `default-collection`) 接管所有"曾经发过的请求", 按 `method+url` 唯一 upsert
+- Sidebar 从 `记录 / 集合 / 环境` 三 tab 收敛为 `集合 / 环境` 两 tab
+- 集合支持拖拽 req 跨集合移动
+- 请求右键菜单精简: 加载到编辑器 / 复制 URL / 复制为 cURL / 重命名 / 删除
 
 当前正式运行模型已经切到 `Webview local-first + Host service-backend`:
 
 - Webview 负责工作台会话态和即时交互反馈
 - Host 负责持久化、真实请求执行、VS Code API 与外部副作用
 - 高频选择和编辑不再依赖 Host 每次整包回推 `httpClient/state`
-
-当前真实架构是:
-
-- 扩展宿主继续负责命令、持久化、请求执行、cURL 导入、环境解析、存储和消息桥
-- 主要 UI 由 `webviews/http_client/` 下的 React workbench 承载
-- 工作台内部包含左侧 `记录 / 集合 / 环境`、中间请求编辑和右侧响应结果, 高频交互都在同一个 WebviewPanel 内完成
-- 左侧操作当前已经收敛为 `左键选择 + 右键菜单`, 以减少行内按钮噪音
-- 左侧 `记录` 已切为 `METHOD + 完整 URL` 的紧凑列表, 右键 `保存到集合...` 会调用 VS Code 原生 `QuickPick`, 支持选择已有集合或先新建集合再保存
-- 左侧 `集合` 已切为可折叠集合树, 集合下方只展示请求 URL 列表, 集合标题右键可做删除等管理动作
-- 中间编辑区不再保留独立标题行; 顶部直接以 `METHOD + URL + 发送` 作为主工具行
-- 环境切换位于下一行, 下拉框宽度更窄, 并与右侧按钮组保持固定间隔
-- `说明` 按钮保留在第二行按钮组中, 用于查看用法和快捷键
-- 外部入口当前改为命令和状态栏按钮, 不再占用 Activity Bar 自定义侧边栏
-- 宿主侧仍保留 `src/http_client/webview/*` 作为 HTML 装载层
-- Toast 沿用统一 `ToastService + Webview host script + VS Code native fallback` 体系, 主要 host 位于工作台
-
-因此, 当前系统的正式主路径是:
-
-- 状态栏按钮 / 命令面板 -> 完整 HTTP Client 工作台
-- 工作台内完成几乎全部高频 UI 交互
 
 ## 3. 模块拆分
 
@@ -53,7 +42,7 @@ HTTP Client 已经完成 React Webview 重构, 并进一步把高频交互收敛
 - `register.ts`
   - 注册 HTTP Client 命令
   - 注册状态栏入口按钮
-  - 装配 store、panel、sidebar 与 toast
+  - 装配 store、panel 与 toast
 
 - `panel.ts`
   - `HttpClientPanelController`
@@ -61,13 +50,14 @@ HTTP Client 已经完成 React Webview 重构, 并进一步把高频交互收敛
   - 维护工作台视图状态、草稿、响应、压测结果
   - 处理工作台与宿主之间的消息
   - 注册工作台 Toast host
-
-- `sidebar_view.ts`
-  - 旧侧边栏启动器实现
-  - 当前已不再注册为正式运行入口
+  - 处理 `moveRequest` / `exportCurl` 副作用消息
 
 - `store.ts`
-  - 管理请求集合、环境、历史、收藏和视图相关状态
+  - 管理 `mx_http_client.json` 配置
+  - 集合内嵌 requests 持久化
+  - `findRequestByUrl` / `upsertRequestByUrl` (按 method+url 唯一 upsert)
+  - `moveRequest` 跨集合搬运
+  - 默认集合保护 (不可重命名/删除)
 
 - `resolver.ts`
   - 负责请求解析与变量求值
@@ -79,70 +69,51 @@ HTTP Client 已经完成 React Webview 重构, 并进一步把高频交互收敛
   - 执行小规模压测
 
 - `curl_import.ts`
-  - 将 cURL 导入为请求实体
+  - 将 cURL 字符串导入为请求实体
+
+- `curl_export.ts`
+  - 将请求导出为 cURL 字符串 (用于右键"复制为 cURL")
 
 - `types.ts`
   - 定义宿主与 Webview 共享类型、视图状态与消息协议常量
+  - `HttpCollectionEntity.requests: HttpRequestEntity[]` (内嵌)
+  - `HttpRequestEntity.lastStatus / lastDurationMs / lastExecutedAt / lastResponseSnapshot`
 
 ### 3.2 Webview 装载层
 
-宿主侧仍保留一个很薄的 Webview 装载层:
-
 - `src/http_client/webview/index.ts`
-  - 工作台 HTML 入口
-  - 当前直接返回 `getReactWorkbenchHtml(...)`
+  - 工作台 HTML 入口, 返回 `getReactWorkbenchHtml(...)`
 
 - `src/http_client/webview/react_html.ts`
   - 统一生成 React Webview HTML
-  - 当前主要服务 `workbench` surface
   - 负责拼接 `media/http_client/*.js` 与 `*.css`
   - 负责注入 bootstrap
   - 负责注入统一 Toast host 标记、样式和脚本
   - 负责 CSP 与 nonce
 
-- `src/http_client/sidebar_view.ts`
-  - 侧边栏当前直接输出轻量启动器 HTML
-  - 不再装载完整 React 列表页
+- `src/http_client/webview/styles.ts`
+  - 旧版内联样式 (保留但不在主路径)
 
 ### 3.3 React 前端层
 
 当前 UI 主实现位于 `webviews/http_client/`:
 
 - `workbench/main.tsx`: 工作台入口
-- `workbench/App.tsx`: 工作台根组件
-- `workbench/useWorkbenchController.ts`: 工作台宿主消息桥
-- `sidebar/SidebarApp.tsx`: 左侧 `记录 / 集合 / 环境` 视图层, 当前由纯视图 `SidebarView` 和运行时包装层 `SidebarSurface` 组成, 负责紧凑列表, 集合折叠树, 历史右键 `保存到集合...` 和环境编辑卡片
-- `sidebar/useSidebarController.ts`: 旧侧边栏控制器, 当前更多保留为共享逻辑和测试入口
+- `workbench/App.tsx`: 工作台根组件 (三栏布局)
+- `workbench/useWorkbenchController.ts`: 工作台宿主消息桥 + local-first 会话态
+- `sidebar/SidebarApp.tsx`: 左侧 `集合 / 环境` 视图层, 包含紧凑 req-item 渲染, 默认集合锁标, 拖拽支持和右键菜单
+- `sidebar/useSidebarController.ts`: 独立 sidebar 入口控制器
 - `shared/bootstrap.ts`: 读取宿主注入的 bootstrap 数据
 - `shared/vscode.ts`: VS Code Webview API 适配
-- `shared/workbench_model.ts`: 工作台纯逻辑模型
-- `shared/sidebar_model.ts`: 侧边栏纯逻辑模型
+- `shared/workbench_model.ts`: 工作台纯逻辑模型 (selectRequestLocally 自动加载 lastResponseSnapshot)
+- `shared/sidebar_model.ts`: 侧边栏纯逻辑模型 (buildCollectionGroups / getRequestStatusBadge / relativeTime)
 - `styles/tokens.css`: 共享样式 token
 
 ## 4. Workbench 优先运行模型
 
-当前正式运行时应按"完整工作台优先"理解, 而不是再把 HTTP Client 视为左右两个独立热交互面板。
+主运行表面仍是 `workbench`。Sidebar 当前作为可选独立入口保留, 但工作台已包含完整左侧交互。
 
-当前最重要的事实是:
-
-- 主运行表面是 `workbench`
-- 左侧 `记录 / 集合 / 环境` 已内嵌到工作台页面
-- 外部入口已切换为状态栏和命令, 不再依赖 Activity Bar 自定义侧边栏
-
-Vite 构建仍保留多个入口产物, 但运行时主路径已经收敛:
-
-- `root = webviews/http_client`
-- `publicDir = false`
-- `appType = "custom"`
-- `plugins = [react(), tailwindcss()]`
-- `target = "es2022"`
-- 输出目录 `media/http_client/`
-- 工作台入口 `workbench/main.tsx`
-- 入口产物命名 `[name].js`
-- 代码分块产物命名 `chunks/[name].js`
-- CSS 产物直接输出为 `[name].css`
-
-这也是为什么文档必须把 `webviews/http_client/` 与 `media/http_client/` 视为正式结构的一部分, 但不应再把 `sidebar` 入口理解为主运行时。
+Vite 构建配置保持不变。
 
 ## 5. 工作台运行模型
 
@@ -154,111 +125,85 @@ Vite 构建仍保留多个入口产物, 但运行时主路径已经收敛:
 
 1. 用户执行 `mx http open` / `mx http send` / `mx http save` / `mx http import curl` / `mx http load test`
 2. 宿主打开或复用 `WebviewPanel`
-3. `panel.ts` 调用 `getHttpClientHtml(...)`
-4. `getHttpClientHtml(...)` 当前直接走 `getReactWorkbenchHtml(...)`
-5. HTML 注入:
-   - `window.__MX_HTTP_CLIENT_BOOTSTRAP__ = { buildId, surface, initialState }`
-   - `workbench.js`
-   - `workbench.css`
-   - Toast host 标记 / 样式 / 脚本
-6. React 前端启动后向宿主发送 `httpClient/init`
-7. `initialState` 直接作为首屏 snapshot 被前端消费
-8. `httpClient/init` 仅用于 buildId 对齐、草稿恢复和待执行宿主命令下发, 不再立即重复回推 `httpClient/state`
+3. `panel.ts` 调用 `getHttpClientHtml(...)` -> `getReactWorkbenchHtml(...)`
+4. HTML 注入 bootstrap `window.__MX_HTTP_CLIENT_BOOTSTRAP__ = { buildId, surface, initialState }`
+5. React 前端启动后向宿主发送 `httpClient/init`
+6. `initialState` 作为首屏 snapshot 被前端消费
 
 ### 5.2 Local-first 运行边界
 
-当前工作台已明确按 `local-first` 模式工作:
+Webview 持有工作台会话态:
 
-- Webview 持有工作台会话态:
-  - `activeRequestId`
-  - `selectedHistoryId`
-  - `activeEnvironmentId`
-  - `draft`
-  - `response`
-  - `requestRunning`
-  - `loadTestProfile`
-  - `loadTestResult`
-  - `loadTestProgress`
-  - `dirty`
-  - `activeTab`
-  - `responseTab`
-- Host 持有持久化与副作用能力:
-  - `mx_http_client.json` 配置
-  - 请求草稿持久化
-  - 历史记录
-  - 普通请求执行与取消
-  - 压测执行
-  - cURL 导入
-  - VS Code API, Toast 与命令入口
+- `activeRequestId`
+- `activeEnvironmentId`
+- `draft`
+- `response` (或 req.lastResponseSnapshot 自动加载)
+- `requestRunning`
+- `loadTestProfile`
+- `loadTestResult`
+- `loadTestProgress`
+- `dirty`
+- `activeTab`
+- `responseTab`
 
-因此, 以下高频交互已经改为 Webview 本地立即完成, Host 只做后台状态同步:
+Host 持有持久化与副作用能力:
 
-- 选择请求
-- 选择历史
-- 选择环境
-- 新建 scratch request
-- 收藏切换
-- 草稿编辑
-- 请求 / 响应 tab 切换
-- 压测参数编辑
+- `mx_http_client.json` 配置
+- 请求草稿持久化
+- 普通请求执行与取消
+- 压测执行
+- cURL 导入与导出
+- VS Code API, Toast 与命令入口
 
-`httpClient/state` 不再作为这些热路径的逐次确认消息。
+### 5.3 集合与请求数据流
 
-`activeRequestId` 的持久化策略也已经单独收敛:
+新数据模型的核心:
 
-- 它只作为“下次恢复哪个稳定请求”的持久化锚点
-- 浏览历史时, Webview 会立即切换 `selectedHistoryId / draft`, 但 Host 不会立刻改写 `workspaceState` 中的 `activeRequestId`
-- 只有切换到保存请求, 或基于当前请求继续编辑并进入稳定草稿态时, Host 才会在后台 quiet period 后去抖刷新 `activeRequestId`
+- **集合内嵌请求**: `HttpCollectionEntity.requests: HttpRequestEntity[]`, 不再有平行 `requests[]` 数组
+- **默认集合接管历史**: 发送请求时, 按 `method+url` 在所有集合里查找:
+  - 命中 → 更新 `lastStatus / lastDurationMs / lastExecutedAt / lastResponseSnapshot`
+  - 未命中 → 自动创建到默认集合顶部
+- **选择请求自动加载快照**: `selectRequestLocally(viewState, requestId)` 会自动把 `req.lastResponseSnapshot` 加载到 `viewState.response`, 用户切回历史请求能立即看到响应
+- **跨集合拖拽**: `moveRequest(requestId, targetCollectionId)` 在 store 层搬运请求并保留 `lastResponseSnapshot`
 
-这样做的目的不是减少功能, 而是避免“历史浏览这种高频只读交互”被低价值的 Memento 落盘拖慢.
+### 5.4 侧边栏 UI 行为
 
-工作台宿主继续保留的职责包括:
+#### 5.4.1 集合 tab
 
-- 请求配置与草稿持久化
-- 请求执行与取消
-- 响应结果与 ACK 等待
-- 压测状态与结果
-- 与 store / resolver / runner / load_runner / curl_import 的联动
+- 每个集合是可折叠分组, 默认集合带 🔒 标识 + 不可删除/重命名
+- 请求行紧凑显示: `method pill + name + 状态码 · 耗时 · 相对时间`
+- 状态码颜色编码: 2xx 绿 (ok), 4xx 黄 (warn), 5xx 红 (err), 未运行灰 (neutral)
+- 空集合显示引导文案 ("拖入 URL 或右击新建请求")
+- 拖拽: `req-item` 可拖到任意 `collection-body`, 目标区域显示蓝色虚线 drop 提示
+- 集合右键: 新建请求 / 重命名 / 删除 (默认集合只有"新建请求")
+- 请求右键: 加载到编辑器 / 复制 URL / 复制为 cURL / 重命名 / 删除 (5 项)
 
-工作台前端当前承担:
+#### 5.4.2 环境 tab
 
-- 左侧导航与筛选
-- 请求选择, 历史切换, 环境切换的即时本地反馈
-- 左侧 `记录 / 集合 / 环境` 的紧凑列表渲染, 上下文菜单和集合折叠交互编排
-- 环境页中的变量编辑卡片
-- 中间双行工具栏, `METHOD + URL + 发送` 主工具行与 `环境 + 按钮组` 次工具行, 以及右侧响应区的同页联动
-- 中间 `说明` 弹窗与快捷键提示
-- 响应原文展示, 关键字搜索, 原文/转义切换, 复制和 Toast 呈现
-- Local-first 会话态更新与宿主消息消费
+- 环境列表 + 激活切换
+- 环境编辑卡片 (名称 + key/value 变量列表)
+- 环境右键: 保存环境 / 删除环境
 
-响应区当前的正式行为是:
+### 5.5 响应区
 
-- `Body` 默认显示非 Pretty 的文本视图; 会把 `\n`, `\r`, `\t`, `\uXXXX` 等常见转义还原成实际显示效果, 但不做格式化排版
-- `切换 Raw` 会切到轻量转义视图; 实际换行会显示为 `\n`, 中文保持原样显示, 不再输出 `\uXXXX`, 并关闭自动折行以便按单行原样检查
-- `编辑` 按钮会请求 Host 在当前工作台所在标签组中打开一个新的临时文档, 作为深度查看入口, 不再分离到旁侧标签组
+响应区当前的正式行为:
+
+- `Body` 默认显示非 Pretty 的文本视图
+- `切换 Raw` 切到轻量转义视图
+- `编辑` 按钮请求 Host 在当前工作台所在标签组中打开一个新的临时文档
 
 ## 6. 外部入口运行模型
 
-当前外部入口已经收敛为更轻的形式:
+外部入口:
 
 1. 状态栏按钮 `HTTP Client`
 2. 命令面板命令 `mx http open`
 
-入口行为:
-
-1. 用户点击状态栏按钮或执行命令
-2. 宿主打开或复用 `WebviewPanel`
-3. 工作台承担完整三栏交互
-
-这样做的原因是:
-
-- 避免为一个完整页面额外占用 VS Code 的 Sidebar 宽度
-- 保持主视觉聚焦在三栏工作台
-- 降低用户对"外层启动器 + 内层主页面"双层结构的感知负担
+入口行为: 宿主打开或复用 `WebviewPanel`, 工作台承担完整三栏交互。
 
 ## 7. Bootstrap 与构建一致性
 
-当前 React HTML 会向全局注入:
+React HTML 向全局注入:
 
 ```js
 window.__MX_HTTP_CLIENT_BOOTSTRAP__ = {
@@ -268,20 +213,13 @@ window.__MX_HTTP_CLIENT_BOOTSTRAP__ = {
 };
 ```
 
-这个 bootstrap 有两个作用:
-
-1. 在 Webview 首屏渲染前提供完整首屏 snapshot
-2. 让宿主与前端确认当前构建版本一致
-
-工作台宿主会保存当前 `buildId`, 并使用 `HTTP_CLIENT_WEBVIEW_BUILD_ID` 校验当前 Webview 是否是预期构建。
-
-如果发现 Webview 构建版本不一致, Host 会重建 HTML 并重新注入最新 snapshot, 而不是继续依赖旧页面与旧消息语义。
+工作台宿主会保存当前 `buildId` 并使用 `HTTP_CLIENT_WEBVIEW_BUILD_ID` 校验当前 Webview 是否是预期构建。如果不一致, Host 会重建 HTML 并重新注入最新 snapshot。
 
 ## 8. 消息协议边界
 
 ### 8.1 工作台关键消息
 
-前端到宿主常见消息包括:
+前端到宿主:
 
 - `httpClient/init`
 - `httpClient/uiStateChanged`
@@ -295,98 +233,53 @@ window.__MX_HTTP_CLIENT_BOOTSTRAP__ = {
 - `httpClient/deleteCollection`
 - `httpClient/createRequest`
 - `httpClient/createEnvironment`
-- `httpClient/renameRequestPrompt`
+- `httpClient/renameRequest` (含 name payload)
 - `httpClient/deleteRequest`
 - `httpClient/duplicateRequest`
-- `httpClient/toggleFavorite`
+- `httpClient/moveRequest` (拖拽跨集合)
+- `httpClient/exportCurl` (复制为 cURL)
 - `httpClient/selectEnvironment`
 - `httpClient/saveEnvironment`
 - `httpClient/deleteEnvironment`
-- `httpClient/selectHistory`
+- `httpClient/openResponseEditor`
 - `httpClient/loadTest/start`
 - `httpClient/loadTest/stop`
 - `httpClient/responseAck`
 - `mxToast/notify`
 
-其中消息边界已经按频率拆开:
-
-- Local-first 高频消息:
-  - `httpClient/draftChanged`
-  - `httpClient/selectRequest`
-  - `httpClient/selectHistory`
-  - `httpClient/selectEnvironment`
-  - `httpClient/createRequest`
-  - `httpClient/toggleFavorite`
-- 宿主副作用消息:
-  - `httpClient/save`
-  - `httpClient/send`
-  - `httpClient/cancelRequest`
-  - `httpClient/loadTest/start`
-  - `httpClient/loadTest/stop`
-  - `httpClient/importCurlPrompt`
-  - `httpClient/createCollectionPrompt`
-  - `httpClient/renameCollectionPrompt`
-  - `httpClient/deleteCollection`
-  - `httpClient/createEnvironment`
-  - `httpClient/saveEnvironment`
-  - `httpClient/deleteEnvironment`
-  - `httpClient/renameRequestPrompt`
-  - `httpClient/deleteRequest`
-  - `httpClient/duplicateRequest`
-
-宿主到前端常见消息包括:
+宿主到前端:
 
 - `httpClient/state`
-- `httpClient/hostCommand`
+- `httpClient/curl` (响应 `exportCurl` 请求, 携带完整 cURL 字符串)
 - `httpClient/response`
 - `httpClient/loadTest/progress`
 - `httpClient/loadTest/result`
+- `httpClient/error`
+- `httpClient/hostCommand`
 - `mxToast/show`
 
-当前约束是:
+约束:
 
-- `httpClient/state` 只用于结构性刷新、外部命令打开、历史异步落盘刷新和异常恢复
-- `httpClient/response`、`httpClient/loadTest/progress`、`httpClient/loadTest/result` 负责把真正的执行结果推回前端
+- `httpClient/state` 只用于结构性刷新、外部命令打开、异步落盘刷新和异常恢复
+- `httpClient/response`、`httpClient/loadTest/progress`、`httpClient/loadTest/result` 负责把执行结果推回前端
 - 高频选择动作不再由 Host 用整包 `state` 进行二次确认
 
-### 8.2 外部入口关键行为
+### 8.2 外部入口
 
-当前外部入口不再走单独的 webview 消息协议.
-
-状态栏按钮直接绑定命令:
-
-- `mx-dev-toolkit.httpClient.openWorkbench`
+状态栏按钮直接绑定命令 `mx-dev-toolkit.httpClient.openWorkbench`。
 
 ## 9. Toast 集成
 
-HTTP Client 没有实现一套独立于全局的提示系统, 而是直接接入 `ToastService`。
-
-当前优先级:
+HTTP Client 直接接入 `ToastService`:
 
 1. 工作台 host `httpClient.panel` 优先级 `100`
 2. 无可用 Webview 时回退到原生 `showErrorMessage` / `showWarningMessage` / `showInformationMessage`
 
-这也意味着当前 Toast 的运行时并不是完整 React 组件树, 而是宿主注入的 Webview Toast host 脚本。
+## 10. 关于旧 UI 文件
 
-## 10. 关于旧 `src/http_client/webview/ui/*`
+仓库中不再保留 `src/http_client/webview/ui/*` 旧 UI 文件 (已迁移到 React 后清理)。`src/http_client/sidebar_view.ts` 也已废弃, 外部入口仅保留状态栏按钮和 `mx http open` 命令。
 
-仓库中仍然存在:
-
-- `src/http_client/webview/state.ts`
-- `src/http_client/webview/styles.ts`
-- `src/http_client/webview/ui/toolbar.ts`
-- `src/http_client/webview/ui/request_editor.ts`
-- `src/http_client/webview/ui/response_viewer.ts`
-- `src/http_client/webview/ui/load_test_view.ts`
-- `src/http_client/webview/ui/sidebar.ts`
-
-这些文件的存在并不代表它们仍是当前主运行路径。
-
-当前文档约定应当明确:
-
-- “目录仍存在” ≠ “仍是当前主 UI”
-- 运行时主入口已经切到 React 双入口
-- 如果未来继续清理旧目录, 应作为工程治理动作进行, 而不是把它们继续写成正式架构
+`src/http_client/webview/styles.ts` 保留作为内联样式 fallback, 但不在主路径使用。
 
 ## 11. 构建与测试
 
@@ -395,29 +288,25 @@ HTTP Client 没有实现一套独立于全局的提示系统, 而是直接接入
 - `pnpm compile:webview`: 构建 React Webview 到 `media/http_client/`
 - `pnpm compile:extension`: 打包扩展宿主到 `out/extension.js`
 - `pnpm compile`: 先 Webview, 后宿主
-- `pnpm watch:webview`: 监听 Webview 构建
-- `pnpm watch:extension`: 监听扩展宿主构建
-- `pnpm watch`: 并行 watch
 
 ### 11.2 测试
 
 宿主侧测试:
 
-- `src/http_client/tests/panel.test.ts`
-- `src/http_client/tests/sidebar_view.test.ts`
-- `src/http_client/tests/react_loader.test.ts`
-- `src/http_client/tests/store.test.ts`
-- `src/http_client/tests/webview_state.test.ts`
-- `src/http_client/tests/runner.test.ts`
-- `src/http_client/tests/resolver.test.ts`
+- `src/http_client/tests/store.test.ts`: 配置初始化, 嵌套集合, 快照持久化, 默认集合保护
+- `src/http_client/tests/panel.test.ts`: 发送请求后自动 upsert 集合快照, 加载 lastResponseSnapshot, 跨集合移动, 导出 cURL, 默认集合删除保护
 - `src/http_client/tests/curl_import.test.ts`
 - `src/http_client/tests/load_runner.test.ts`
+- `src/http_client/tests/runner.test.ts`
+- `src/http_client/tests/resolver.test.ts`
+- `src/http_client/tests/register.test.ts`
+- `src/http_client/tests/react_loader.test.ts`
 
 前端侧测试:
 
-- `webviews/http_client/tests/component_contract.test.ts`
-- `webviews/http_client/tests/sidebar_model.test.ts`
-- `webviews/http_client/tests/workbench_model.test.ts`
+- `webviews/http_client/tests/sidebar_model.test.ts`: 集合筛选, 默认集合保护, 状态徽章, 时间工具
+- `webviews/http_client/tests/workbench_model.test.ts`: 纯逻辑函数, local-first session patch, lastResponseSnapshot 自动加载, moveRequestLocally
+- `webviews/http_client/tests/component_contract.test.ts`: 工作台三栏接线, 侧边栏集合页 + 环境页契约
 
 对应脚本:
 
@@ -430,17 +319,19 @@ HTTP Client 没有实现一套独立于全局的提示系统, 而是直接接入
 最小验收路径:
 
 1. 点击状态栏 `HTTP Client`, 进入完整工作台
-2. 在工作台左栏切换 `记录 / 集合 / 环境`
-3. 新建请求, 编辑 URL 并发送
-4. 保存请求后, 再从左栏重新选择它
-5. 导入一段 cURL
-6. 切换环境并验证变量解析
-7. 启动一次压测并确认进度/结果展示
-8. 检查 Toast 在工作台与原生回退路径上的表现
+2. 在工作台左栏切换 `集合 / 环境`
+3. 编辑 URL 发送一个全新请求, 验证自动出现在默认集合顶部
+4. 再次发送相同 URL, 验证快照被更新 (不新建条目)
+5. 拖拽请求到另一个集合, 验证移动成功
+6. 右击请求 → 复制为 cURL, 验证剪贴板有 cURL 命令
+7. 切换环境并验证变量解析
+8. 启动一次压测并确认进度/结果展示
+9. 检查 Toast 在工作台与原生回退路径上的表现
 
 ## 13. 后续维护原则
 
 - 当前正式事实以本文件与 `docs/设计.md` 为准。
-- React 迁移历史只保存在归档文档中, 不再回流覆盖正式设计。
-- 新增 UI 变更时, 先确认宿主入口和 Vite 入口是否变化, 再更新文档。
-- 只要当前主路径没有回退, 就不要再把 `src/http_client/webview/ui/*` 重新写成正式事实源。
+- 旧 UI 代码路径不再保留, 任何"历史兼容"都属于一次性迁移动作, 不应回流覆盖正式设计。
+- 新增 UI 变更时, 优先复用 `shared/sidebar_model.ts` 与 `shared/workbench_model.ts` 提供的纯函数。
+- `mx_http_client.json` 配置版本已升到 `2`, 旧版本会被 store 检测后丢弃并重置 (采用破坏性升级策略)。
+

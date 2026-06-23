@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExtensionToWebviewMessage,
   HttpClientViewState,
@@ -12,15 +12,11 @@ import { getVscodeApi } from "../shared/vscode";
 import {
   buildCollectionGroups,
   buildEnvironmentItems,
-  buildFavoriteRequests,
-  buildHistoryGroups,
-  buildUngroupedRequests,
   createInitialSidebarUiState,
   type SidebarCollectionGroup,
   type SidebarEnvironmentDraft,
   type SidebarEnvironmentDraftRow,
   type SidebarEnvironmentItem,
-  type SidebarHistoryGroup,
   type SidebarTab,
   type SidebarUiState,
 } from "../shared/sidebar_model";
@@ -35,13 +31,12 @@ import {
   createInitialUiState,
   getDisplayedResponseText,
   highlightText,
+  moveRequestLocally,
   patchWorkbenchSession,
-  selectHistoryLocally,
   selectRequestLocally,
   setEnvironmentLocally,
   syncParamsFromUrl,
   syncUrlFromParams,
-  toggleFavoriteLocally,
   updateDraftLocally,
   type WorkbenchUiState,
 } from "../shared/workbench_model";
@@ -54,17 +49,13 @@ export interface WorkbenchController {
   hasHostState: boolean;
   displayedResponseText: string;
   highlightedResponseHtml: string;
-  historyGroups: SidebarHistoryGroup[];
   collectionGroups: SidebarCollectionGroup[];
-  favoriteRequests: HttpRequestEntity[];
-  ungroupedRequests: HttpClientViewState["config"]["requests"];
   environmentItems: SidebarEnvironmentItem[];
   selectedEnvironment: HttpEnvironmentEntity | null;
   environmentDraft: SidebarEnvironmentDraft | null;
   pendingRequestAction: { requestId: string; kind: "duplicate" | "delete" } | null;
   setSidebarTab(tab: SidebarTab): void;
   setSidebarKeyword(keyword: string): void;
-  toggleHistoryGroup(groupKey: string): void;
   toggleCollectionGroup(groupKey: string): void;
   createRequest(collectionId?: string | null): void;
   createCollection(): void;
@@ -75,11 +66,8 @@ export interface WorkbenchController {
   renameRequest(requestId: string): void;
   duplicateRequest(requestId: string): void;
   deleteRequest(requestId: string): void;
-  toggleFavorite(requestId: string, favorite: boolean): void;
-  selectHistory(historyId: string): void;
-  promptSaveHistoryToCollection(historyId: string): void;
-  saveHistoryToCollection(historyId: string, collectionId: string): void;
-  traceHistoryPointerDown?(historyId: string, source: "group-main" | "record-item"): void;
+  exportCurl(requestId: string): void;
+  moveRequest(requestId: string, targetCollectionId: string): void;
   selectEnvironment(environmentId: string | null): void;
   setEnvironmentDraftName(name: string): void;
   updateEnvironmentVariable(id: string, field: "key" | "value", value: string): void;
@@ -103,6 +91,7 @@ export interface WorkbenchController {
   toggleResponsePretty(): void;
   performSend(): void;
   performSave(): void;
+  cancelRequest(): void;
   performLoadTest(): void;
   stopLoadTest(): void;
   setLoadTestProfileField(field: "totalRequests" | "concurrency" | "timeoutMs", value: number): void;
@@ -110,14 +99,6 @@ export interface WorkbenchController {
   copyResponse(): Promise<void>;
   openResponseEditor(): void;
   copyHeaderValue(value: string): Promise<void>;
-}
-
-interface PendingHistoryPerfTrace {
-  seq: number;
-  historyId: string;
-  startedAt: number;
-  pointerDownAt: number | null;
-  localStateAt: number | null;
 }
 
 export function useWorkbenchController(): WorkbenchController {
@@ -137,9 +118,6 @@ export function useWorkbenchController(): WorkbenchController {
   const environmentRowIdRef = useRef(1);
   const pendingAckSourceRef = useRef<"bootstrap" | "state" | "response">("bootstrap");
   const lastAckKeyRef = useRef("");
-  const historyTraceSeqRef = useRef(0);
-  const lastHistoryPointerDownRef = useRef<{ historyId: string; at: number; source: "group-main" | "record-item" } | null>(null);
-  const pendingHistoryPerfRef = useRef<PendingHistoryPerfTrace | null>(null);
 
   useEffect(() => {
     viewStateRef.current = viewState;
@@ -177,19 +155,6 @@ export function useWorkbenchController(): WorkbenchController {
       });
     },
     [postMessage]
-  );
-
-  const traceHistoryPointerDown = useCallback(
-    (historyId: string, source: "group-main" | "record-item") => {
-      const at = getPerfNow();
-      lastHistoryPointerDownRef.current = {
-        historyId,
-        at,
-        source,
-      };
-      logFrontend("info", "perf.history.pointerdown", `historyId=${historyId} source=${source} t=${formatPerfValue(at)}`);
-    },
-    [logFrontend]
   );
 
   const notifyToast = useCallback(
@@ -291,16 +256,6 @@ export function useWorkbenchController(): WorkbenchController {
     }));
   }, [updateSidebarUiState]);
 
-  const toggleHistoryGroup = useCallback((groupKey: string) => {
-    updateSidebarUiState((current) => ({
-      ...current,
-      expandedHistoryGroups: {
-        ...current.expandedHistoryGroups,
-        [groupKey]: !current.expandedHistoryGroups[groupKey],
-      },
-    }));
-  }, [updateSidebarUiState]);
-
   const toggleCollectionGroup = useCallback((groupKey: string) => {
     updateSidebarUiState((current) => ({
       ...current,
@@ -391,11 +346,10 @@ export function useWorkbenchController(): WorkbenchController {
 
   const createRequest = useCallback(
     (collectionId: string | null = null) => {
-      const nextDraft = createWorkbenchScratchRequest(collectionId);
+      const nextDraft = createWorkbenchScratchRequest();
       updateSidebarUiState((current) => ({
         ...current,
         activeTab: "collections",
-        selectedHistoryId: null,
       }));
       updateViewState((current) => createScratchRequestLocally(current, nextDraft));
       updateUiState((current) => ({
@@ -449,10 +403,6 @@ export function useWorkbenchController(): WorkbenchController {
 
   const selectRequest = useCallback(
     (requestId: string) => {
-      updateSidebarUiState((current) => ({
-        ...current,
-        selectedHistoryId: null,
-      }));
       updateViewState((current) => selectRequestLocally(current, requestId));
       updateUiState((current) => ({
         ...current,
@@ -463,14 +413,18 @@ export function useWorkbenchController(): WorkbenchController {
         payload: { requestId },
       });
     },
-    [postMessage, updateSidebarUiState, updateUiState, updateViewState]
+    [postMessage, updateUiState, updateViewState]
   );
 
   const renameRequest = useCallback(
-    (requestId: string) => {
+    (requestId: string, name?: string) => {
+      const nextName = name ?? window.prompt("请输入新的请求名称") ?? "";
+      if (!nextName.trim()) {
+        return;
+      }
       postMessage({
-        type: "httpClient/renameRequestPrompt",
-        payload: { requestId },
+        type: "httpClient/renameRequest",
+        payload: { requestId, name: nextName.trim() },
       });
     },
     [postMessage]
@@ -516,86 +470,25 @@ export function useWorkbenchController(): WorkbenchController {
     [postMessage]
   );
 
-  const toggleFavorite = useCallback(
-    (requestId: string, favorite: boolean) => {
-      updateViewState((current) => toggleFavoriteLocally(current, requestId, favorite), {
-        emitDraft: viewStateRef.current.draft?.id === requestId,
-      });
+  const exportCurl = useCallback(
+    (requestId: string) => {
       postMessage({
-        type: "httpClient/toggleFavorite",
-        payload: { requestId, favorite },
+        type: "httpClient/exportCurl",
+        payload: { requestId },
+      });
+    },
+    [postMessage]
+  );
+
+  const moveRequest = useCallback(
+    (requestId: string, targetCollectionId: string) => {
+      updateViewState((current) => moveRequestLocally(current, requestId, targetCollectionId));
+      postMessage({
+        type: "httpClient/moveRequest",
+        payload: { requestId, targetCollectionId },
       });
     },
     [postMessage, updateViewState]
-  );
-
-  const selectHistory = useCallback(
-    (historyId: string) => {
-      const startedAt = getPerfNow();
-      const seq = ++historyTraceSeqRef.current;
-      const pointerDown = lastHistoryPointerDownRef.current?.historyId === historyId ? lastHistoryPointerDownRef.current : null;
-      pendingHistoryPerfRef.current = {
-        seq,
-        historyId,
-        startedAt,
-        pointerDownAt: pointerDown?.at ?? null,
-        localStateAt: null,
-      };
-      logFrontend(
-        "info",
-        "perf.history.click",
-        `seq=${seq} historyId=${historyId} pointerToClick=${formatPerfDuration(pointerDown ? startedAt - pointerDown.at : null)} source=${pointerDown?.source ?? "unknown"}`
-      );
-      updateSidebarUiState((current) => ({
-        ...current,
-        selectedHistoryId: historyId,
-      }));
-      const nextViewState = updateViewState((current) => selectHistoryLocally(current, historyId));
-      const localStateAt = getPerfNow();
-      if (pendingHistoryPerfRef.current?.seq === seq) {
-        pendingHistoryPerfRef.current.localStateAt = localStateAt;
-      }
-      logFrontend(
-        "info",
-        "perf.history.local_state",
-        `seq=${seq} historyId=${historyId} dt=${formatPerfDuration(localStateAt - startedAt)} draftId=${nextViewState.draft?.id ?? "none"}`
-      );
-      updateUiState((current) => ({
-        ...current,
-        lastErrorMessage: "",
-      }));
-      postMessage({
-        type: "httpClient/selectHistory",
-        payload: { historyId },
-      });
-      const dispatchAt = getPerfNow();
-      logFrontend(
-        "info",
-        "perf.history.dispatch",
-        `seq=${seq} historyId=${historyId} dt=${formatPerfDuration(dispatchAt - startedAt)}`
-      );
-    },
-    [logFrontend, postMessage, updateSidebarUiState, updateUiState, updateViewState]
-  );
-
-  const saveHistoryToCollection = useCallback(
-    (historyId: string, collectionId: string) => {
-      postMessage({
-        type: "httpClient/saveHistoryToCollection",
-        payload: { historyId, collectionId },
-      });
-    },
-    [postMessage]
-  );
-
-  const promptSaveHistoryToCollection = useCallback(
-    (historyId: string) => {
-      postMessage({
-        type: "httpClient/promptSaveHistoryToCollection",
-        payload: { historyId },
-      });
-    },
-    [postMessage]
   );
 
   const updateKeyValue = useCallback(
@@ -704,7 +597,7 @@ export function useWorkbenchController(): WorkbenchController {
     if (urlHint) {
       updateUiState((current) => ({
         ...current,
-        lastErrorMessage: urlHint,
+        lastErrorMessage: "",
       }));
       updateViewState(
         (current) =>
@@ -752,6 +645,10 @@ export function useWorkbenchController(): WorkbenchController {
     });
   }, [postMessage]);
 
+  const cancelRequest = useCallback(() => {
+    postMessage({ type: "httpClient/cancelRequest" });
+  }, [postMessage]);
+
   const performLoadTest = useCallback(() => {
     const currentViewState = viewStateRef.current;
     if (!currentViewState.draft) {
@@ -766,10 +663,6 @@ export function useWorkbenchController(): WorkbenchController {
 
     const urlHint = buildUrlHint(currentViewState.draft.url);
     if (urlHint) {
-      updateUiState((current) => ({
-        ...current,
-        lastErrorMessage: urlHint,
-      }));
       notifyToast(urlHint, "warning", 3000);
       return;
     }
@@ -943,6 +836,16 @@ export function useWorkbenchController(): WorkbenchController {
     });
   }, [createEnvironmentRow, selectedEnvironment?.id, selectedEnvironment?.updatedAt]);
 
+  // 把 moveRequest / selectRequest 暴露到 window, 让 SidebarView 内部使用
+  useEffect(() => {
+    window.__mxSidebarMoveRequest = (requestId, targetCollectionId) => moveRequest(requestId, targetCollectionId);
+    window.__mxSidebarSelectRequest = (requestId) => selectRequest(requestId);
+    return () => {
+      delete window.__mxSidebarMoveRequest;
+      delete window.__mxSidebarSelectRequest;
+    };
+  }, [moveRequest, selectRequest]);
+
   const setEnvironmentDraftName = useCallback((name: string) => {
     setEnvironmentDraft((current) => {
       if (!current) {
@@ -1030,21 +933,9 @@ export function useWorkbenchController(): WorkbenchController {
     });
   }, [notifyToast, postMessage, selectedEnvironment]);
 
-  const historyGroups = useMemo(() => {
-    return buildHistoryGroups(viewState, sidebarUiState.keyword, sidebarUiState.expandedHistoryGroups, sidebarUiState.selectedHistoryId);
-  }, [sidebarUiState.expandedHistoryGroups, sidebarUiState.keyword, sidebarUiState.selectedHistoryId, viewState]);
-
   const collectionGroups = useMemo(() => {
     return buildCollectionGroups(viewState.config, sidebarUiState.keyword, viewState.draft, sidebarUiState.expandedCollectionGroups);
   }, [sidebarUiState.expandedCollectionGroups, sidebarUiState.keyword, viewState]);
-
-  const favoriteRequests = useMemo(() => {
-    return buildFavoriteRequests(viewState.config, sidebarUiState.keyword, viewState.draft);
-  }, [sidebarUiState.keyword, viewState]);
-
-  const ungroupedRequests = useMemo(() => {
-    return buildUngroupedRequests(viewState.config, sidebarUiState.keyword, viewState.draft);
-  }, [sidebarUiState.keyword, viewState]);
 
   const environmentItems = useMemo(() => {
     return buildEnvironmentItems(viewState, sidebarUiState.keyword);
@@ -1070,20 +961,23 @@ export function useWorkbenchController(): WorkbenchController {
         return;
       }
 
+      if (payload.type === "httpClient/curl") {
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          navigator.clipboard.writeText(payload.payload.curl).catch(() => undefined);
+        }
+        window.__mxToastCenter?.push({
+          message: "cURL 已复制",
+          kind: "success",
+          copyText: payload.payload.curl,
+        });
+        return;
+      }
+
       const snapshot = applyWorkbenchMessage(viewStateRef.current, uiStateRef.current, payload);
       if (payload.type === "httpClient/state") {
         setHasHostState(true);
         pendingAckSourceRef.current = "state";
         setPendingRequestAction(null);
-        updateSidebarUiState((current) => {
-          if (current.selectedHistoryId === payload.payload.selectedHistoryId) {
-            return current;
-          }
-          return {
-            ...current,
-            selectedHistoryId: payload.payload.selectedHistoryId,
-          };
-        });
       } else if (payload.type === "httpClient/response") {
         pendingAckSourceRef.current = "response";
         logFrontend("info", "httpClient/response", "response rendered");
@@ -1106,59 +1000,7 @@ export function useWorkbenchController(): WorkbenchController {
     return () => {
       window.removeEventListener("message", onMessage);
     };
-  }, [bootstrap.buildId, importCurl, logFrontend, performLoadTest, performSave, performSend, postMessage, replaceUiState, replaceViewState, updateSidebarUiState]);
-
-  useLayoutEffect(() => {
-    const pendingTrace = pendingHistoryPerfRef.current;
-    if (!pendingTrace) {
-      return;
-    }
-
-    const historySelected = viewState.selectedHistoryId === pendingTrace.historyId;
-    const sidebarSelected = sidebarUiState.selectedHistoryId === pendingTrace.historyId;
-    if (!historySelected || !sidebarSelected) {
-      return;
-    }
-
-    const committedAt = getPerfNow();
-    logFrontend(
-      "info",
-      "perf.history.commit",
-      `seq=${pendingTrace.seq} historyId=${pendingTrace.historyId} total=${formatPerfDuration(
-        committedAt - pendingTrace.startedAt
-      )} localToCommit=${formatPerfDuration(
-        pendingTrace.localStateAt !== null ? committedAt - pendingTrace.localStateAt : null
-      )} pointerToCommit=${formatPerfDuration(
-        pendingTrace.pointerDownAt !== null ? committedAt - pendingTrace.pointerDownAt : null
-      )}`
-    );
-
-    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
-      pendingHistoryPerfRef.current = null;
-      return;
-    }
-
-    const seq = pendingTrace.seq;
-    window.requestAnimationFrame(() => {
-      const activeTrace = pendingHistoryPerfRef.current;
-      if (!activeTrace || activeTrace.seq !== seq) {
-        return;
-      }
-      const rafAt = getPerfNow();
-      logFrontend(
-        "info",
-        "perf.history.raf",
-        `seq=${activeTrace.seq} historyId=${activeTrace.historyId} total=${formatPerfDuration(
-          rafAt - activeTrace.startedAt
-        )} localToRaf=${formatPerfDuration(
-          activeTrace.localStateAt !== null ? rafAt - activeTrace.localStateAt : null
-        )} pointerToRaf=${formatPerfDuration(
-          activeTrace.pointerDownAt !== null ? rafAt - activeTrace.pointerDownAt : null
-        )}`
-      );
-      pendingHistoryPerfRef.current = null;
-    });
-  }, [logFrontend, sidebarUiState.selectedHistoryId, viewState.selectedHistoryId]);
+  }, [bootstrap.buildId, importCurl, logFrontend, performLoadTest, performSave, performSend, postMessage, replaceUiState, replaceViewState]);
 
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
@@ -1201,18 +1043,13 @@ export function useWorkbenchController(): WorkbenchController {
         performSend();
         return;
       }
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        performSave();
-      }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [performSave, performSend]);
+  }, [performSend]);
 
   const displayedResponseText = useMemo(() => {
     return getDisplayedResponseText(viewState.response, uiState.responsePretty);
@@ -1233,17 +1070,13 @@ export function useWorkbenchController(): WorkbenchController {
     hasHostState,
     displayedResponseText,
     highlightedResponseHtml,
-    historyGroups,
     collectionGroups,
-    favoriteRequests,
-    ungroupedRequests,
     environmentItems,
     selectedEnvironment,
     environmentDraft,
     pendingRequestAction,
     setSidebarTab,
     setSidebarKeyword,
-    toggleHistoryGroup,
     toggleCollectionGroup,
     createRequest,
     createCollection,
@@ -1254,11 +1087,8 @@ export function useWorkbenchController(): WorkbenchController {
     renameRequest,
     duplicateRequest,
     deleteRequest,
-    toggleFavorite,
-    selectHistory,
-    promptSaveHistoryToCollection,
-    saveHistoryToCollection,
-    traceHistoryPointerDown,
+    exportCurl,
+    moveRequest,
     selectEnvironment: setEnvironment,
     setEnvironmentDraftName,
     updateEnvironmentVariable,
@@ -1282,6 +1112,7 @@ export function useWorkbenchController(): WorkbenchController {
     toggleResponsePretty,
     performSend,
     performSave,
+    cancelRequest,
     performLoadTest,
     stopLoadTest,
     setLoadTestProfileField,
@@ -1322,11 +1153,10 @@ function createId(): string {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function createWorkbenchScratchRequest(collectionId: string | null): HttpRequestEntity {
+function createWorkbenchScratchRequest(): HttpRequestEntity {
   const now = new Date().toISOString();
   return {
     id: createId(),
-    collectionId,
     name: "新请求",
     method: "GET",
     url: "",
@@ -1334,24 +1164,11 @@ function createWorkbenchScratchRequest(collectionId: string | null): HttpRequest
     headers: [createEmptyKeyValue(createId)],
     bodyMode: "none",
     bodyText: "",
-    favorite: false,
+    lastStatus: null,
+    lastDurationMs: null,
+    lastExecutedAt: null,
+    lastResponseSnapshot: null,
     createdAt: now,
     updatedAt: now,
   };
-}
-
-function getPerfNow(): number {
-  if (typeof performance !== "undefined" && typeof performance.now === "function") {
-    return performance.now();
-  }
-
-  return Date.now();
-}
-
-function formatPerfValue(value: number): string {
-  return value.toFixed(2);
-}
-
-function formatPerfDuration(durationMs: number | null): string {
-  return durationMs === null ? "n/a" : `${durationMs.toFixed(2)}ms`;
 }

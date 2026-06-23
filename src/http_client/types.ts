@@ -1,18 +1,20 @@
 import { randomUUID } from "crypto";
 import { ToastNotifyMessage, ToastToWebviewMessage } from "../toast/types";
 
-export const HTTP_CLIENT_CONFIG_VERSION = 1;
+export const HTTP_CLIENT_CONFIG_VERSION = 2;
 export const HTTP_CLIENT_CONFIG_FILE = "mx_http_client.json";
 export const HTTP_CLIENT_HISTORY_LIMIT = 50;
-export const HTTP_CLIENT_HISTORY_RESPONSE_MAX_BYTES = 256 * 1024;
+export const HTTP_CLIENT_RESPONSE_SNAPSHOT_MAX_BYTES = 256 * 1024;
 export const HTTP_CLIENT_LOAD_TEST_ERROR_SAMPLE_LIMIT = 20;
 export const HTTP_CLIENT_LOAD_TEST_MAX_CONCURRENCY = 50;
 export const HTTP_CLIENT_LOAD_TEST_MAX_REQUESTS = 10000;
 export const HTTP_CLIENT_LOAD_TEST_MAX_TIMEOUT_MS = 120000;
 export const HTTP_CLIENT_DEFAULT_TIMEOUT_MS = 30000;
 export const HTTP_CLIENT_DEFAULT_LOAD_TEST_TIMEOUT_MS = 30000;
-export const HTTP_CLIENT_WEBVIEW_BUILD_ID = "2026-04-16-01";
+export const HTTP_CLIENT_WEBVIEW_BUILD_ID = "2026-06-23-01";
 export const HTTP_CLIENT_RESPONSE_ACK_TIMEOUT_MS = 400;
+export const HTTP_CLIENT_DEFAULT_COLLECTION_ID = "default-collection";
+export const HTTP_CLIENT_DEFAULT_COLLECTION_NAME = "默认集合";
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];
@@ -26,16 +28,22 @@ export interface HttpKeyValue {
   enabled: boolean;
 }
 
-export interface HttpCollectionEntity {
-  id: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
+export interface HttpResolvedRequest {
+  requestId: string;
+  method: HttpMethod;
+  url: string;
+  headers: Record<string, string>;
+  headerEntries: HttpKeyValue[];
+  bodyText: string;
+  bodyMode: HttpBodyMode;
+  unresolvedVariables: string[];
+  environmentId: string | null;
+  sourceRequest: HttpRequestEntity;
+  timeoutMs: number;
 }
 
 export interface HttpRequestEntity {
   id: string;
-  collectionId: string | null;
   name: string;
   method: HttpMethod;
   url: string;
@@ -43,7 +51,19 @@ export interface HttpRequestEntity {
   headers: HttpKeyValue[];
   bodyMode: HttpBodyMode;
   bodyText: string;
-  favorite: boolean;
+  lastStatus: number | null;
+  lastDurationMs: number | null;
+  lastExecutedAt: string | null;
+  lastResponseSnapshot: HttpResponseResult | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HttpCollectionEntity {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  requests: HttpRequestEntity[];
   createdAt: string;
   updatedAt: string;
 }
@@ -59,40 +79,7 @@ export interface HttpEnvironmentEntity {
 export interface HttpClientConfigFile {
   version: number;
   collections: HttpCollectionEntity[];
-  requests: HttpRequestEntity[];
   environments: HttpEnvironmentEntity[];
-}
-
-export interface HttpResponseSummary {
-  status: number | null;
-  statusText: string;
-  durationMs: number;
-  ok: boolean;
-  sizeBytes: number;
-}
-
-export interface HttpHistoryRecord {
-  id: string;
-  request: HttpRequestEntity;
-  responseSummary: HttpResponseSummary;
-  response?: HttpResponseResult | null;
-  responseTruncated?: boolean;
-  environmentId: string | null;
-  executedAt: string;
-}
-
-export interface HttpResolvedRequest {
-  requestId: string;
-  method: HttpMethod;
-  url: string;
-  headers: Record<string, string>;
-  headerEntries: HttpKeyValue[];
-  bodyText: string;
-  bodyMode: HttpBodyMode;
-  unresolvedVariables: string[];
-  environmentId: string | null;
-  sourceRequest: HttpRequestEntity;
-  timeoutMs: number;
 }
 
 export interface HttpResponseMeta {
@@ -184,10 +171,8 @@ export interface HttpLoadTestResult {
 export interface HttpClientViewState {
   config: HttpClientConfigFile;
   activeRequestId: string | null;
-  selectedHistoryId: string | null;
   activeEnvironmentId: string | null;
   draft: HttpRequestEntity | null;
-  history: HttpHistoryRecord[];
   response: HttpResponseResult | null;
   requestRunning: boolean;
   loadTestProfile: HttpLoadTestProfile;
@@ -205,7 +190,6 @@ export interface HttpClientStateStore {
 
 export interface HttpClientSnapshot {
   config: HttpClientConfigFile;
-  history: HttpHistoryRecord[];
   activeRequestId: string | null;
   activeEnvironmentId: string | null;
 }
@@ -245,6 +229,20 @@ export interface HttpClientResponseAckPayload {
   source: "bootstrap" | "state" | "response";
 }
 
+export interface HttpClientMoveRequestPayload {
+  requestId: string;
+  targetCollectionId: string;
+}
+
+export interface HttpClientExportCurlPayload {
+  requestId: string;
+}
+
+export interface HttpClientRenameRequestPayload {
+  requestId: string;
+  name: string;
+}
+
 export type WebviewToExtensionMessage =
   | { type: "httpClient/init"; payload?: { buildId?: string } }
   | ToastNotifyMessage
@@ -259,24 +257,16 @@ export type WebviewToExtensionMessage =
   | { type: "httpClient/createCollectionPrompt" }
   | { type: "httpClient/renameCollectionPrompt"; payload: { collectionId: string } }
   | { type: "httpClient/deleteCollection"; payload: { collectionId: string } }
-  | {
-      type: "httpClient/createRequest";
-      payload: {
-        collectionId: string | null;
-        request?: HttpRequestEntity;
-      };
-    }
+  | { type: "httpClient/createRequest"; payload: { collectionId: string | null; request?: HttpRequestEntity } }
   | { type: "httpClient/createEnvironment" }
-  | { type: "httpClient/renameRequestPrompt"; payload: { requestId: string } }
+  | { type: "httpClient/renameRequest"; payload: HttpClientRenameRequestPayload }
   | { type: "httpClient/deleteRequest"; payload: { requestId: string } }
   | { type: "httpClient/duplicateRequest"; payload: { requestId: string } }
-  | { type: "httpClient/toggleFavorite"; payload: { requestId: string; favorite: boolean } }
+  | { type: "httpClient/moveRequest"; payload: HttpClientMoveRequestPayload }
+  | { type: "httpClient/exportCurl"; payload: HttpClientExportCurlPayload }
   | { type: "httpClient/selectEnvironment"; payload: { environmentId: string | null } }
   | { type: "httpClient/saveEnvironment"; payload: { environment: HttpEnvironmentEntity } }
   | { type: "httpClient/deleteEnvironment"; payload: { environmentId: string } }
-  | { type: "httpClient/selectHistory"; payload: { historyId: string } }
-  | { type: "httpClient/promptSaveHistoryToCollection"; payload: { historyId: string } }
-  | { type: "httpClient/saveHistoryToCollection"; payload: { historyId: string; collectionId: string } }
   | { type: "httpClient/openResponseEditor"; payload: { content: string; language: string } }
   | { type: "httpClient/loadTest/start"; payload: HttpClientLoadTestPayload }
   | { type: "httpClient/loadTest/stop" }
@@ -286,6 +276,7 @@ export type WebviewToExtensionMessage =
 export type ExtensionToWebviewMessage =
   | ToastToWebviewMessage
   | { type: "httpClient/state"; payload: HttpClientViewState }
+  | { type: "httpClient/curl"; payload: { requestId: string; curl: string } }
   | { type: "httpClient/response"; payload: HttpResponseResult }
   | { type: "httpClient/loadTest/progress"; payload: HttpLoadTestProgress }
   | { type: "httpClient/loadTest/result"; payload: HttpLoadTestResult }
@@ -305,11 +296,13 @@ export function createHttpKeyValue(input?: Partial<HttpKeyValue>): HttpKeyValue 
   };
 }
 
-export function createDefaultCollection(name = "默认集合"): HttpCollectionEntity {
+export function createDefaultCollection(name = HTTP_CLIENT_DEFAULT_COLLECTION_NAME): HttpCollectionEntity {
   const now = createNowIsoString();
   return {
     id: randomUUID(),
     name,
+    isDefault: false,
+    requests: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -329,11 +322,10 @@ export function createDefaultEnvironment(name = "default"): HttpEnvironmentEntit
   };
 }
 
-export function createDefaultRequest(name = "新请求", collectionId: string | null = null): HttpRequestEntity {
+export function createDefaultRequest(name = "新请求"): HttpRequestEntity {
   const now = createNowIsoString();
   return {
     id: randomUUID(),
-    collectionId,
     name,
     method: "GET",
     url: "",
@@ -341,17 +333,27 @@ export function createDefaultRequest(name = "新请求", collectionId: string | 
     headers: [createHttpKeyValue()],
     bodyMode: "none",
     bodyText: "",
-    favorite: false,
+    lastStatus: null,
+    lastDurationMs: null,
+    lastExecutedAt: null,
+    lastResponseSnapshot: null,
     createdAt: now,
     updatedAt: now,
   };
 }
 
 export function createDefaultConfigFile(): HttpClientConfigFile {
+  const collection: HttpCollectionEntity = {
+    id: HTTP_CLIENT_DEFAULT_COLLECTION_ID,
+    name: HTTP_CLIENT_DEFAULT_COLLECTION_NAME,
+    isDefault: true,
+    requests: [],
+    createdAt: createNowIsoString(),
+    updatedAt: createNowIsoString(),
+  };
   return {
     version: HTTP_CLIENT_CONFIG_VERSION,
-    collections: [createDefaultCollection()],
-    requests: [],
+    collections: [collection],
     environments: [createDefaultEnvironment()],
   };
 }
@@ -375,22 +377,6 @@ export function normalizeBodyMode(method: HttpMethod, bodyMode: HttpBodyMode): H
   return bodyMode;
 }
 
-export function createEmptyHistory(): HttpHistoryRecord[] {
-  return [];
-}
-
-export function buildHistoryResponseKey(method: HttpMethod | string, url: string): string {
-  return `${String(method || "").toUpperCase()}|${(url || "").trim()}`;
-}
-
-export function normalizeHistoryRecord(record: HttpHistoryRecord): HttpHistoryRecord {
-  return {
-    ...record,
-    response: record.response ?? null,
-    responseTruncated: Boolean(record.responseTruncated),
-  };
-}
-
 export function sanitizeRequestEntity(input: HttpRequestEntity): HttpRequestEntity {
   return {
     ...input,
@@ -401,7 +387,35 @@ export function sanitizeRequestEntity(input: HttpRequestEntity): HttpRequestEnti
     headers: input.headers.length > 0 ? input.headers.map((item) => ({ ...item })) : [createHttpKeyValue()],
     bodyMode: input.bodyMode,
     bodyText: input.bodyText ?? "",
+    lastStatus: typeof input.lastStatus === "number" ? input.lastStatus : null,
+    lastDurationMs: typeof input.lastDurationMs === "number" ? input.lastDurationMs : null,
+    lastExecutedAt: typeof input.lastExecutedAt === "string" ? input.lastExecutedAt : null,
+    lastResponseSnapshot: input.lastResponseSnapshot ?? null,
     updatedAt: createNowIsoString(),
+  };
+}
+
+export function buildRequestUrlKey(method: HttpMethod | string, url: string): string {
+  return `${String(method || "").toUpperCase()}|${(url || "").trim()}`;
+}
+
+export function clipResponseForSnapshot(response: HttpResponseResult): { response: HttpResponseResult; truncated: boolean } {
+  const rawBytes = Buffer.byteLength(response.bodyRawText, "utf8");
+  if (rawBytes <= HTTP_CLIENT_RESPONSE_SNAPSHOT_MAX_BYTES) {
+    return { response, truncated: false };
+  }
+
+  const truncatedText = Buffer.from(response.bodyRawText, "utf8")
+    .subarray(0, HTTP_CLIENT_RESPONSE_SNAPSHOT_MAX_BYTES)
+    .toString("utf8");
+  return {
+    response: {
+      ...response,
+      bodyRawText: truncatedText,
+      bodyText: truncatedText,
+      bodyPrettyText: truncatedText,
+    },
+    truncated: true,
   };
 }
 

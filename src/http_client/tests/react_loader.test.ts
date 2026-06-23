@@ -19,10 +19,8 @@ test("react_loader: 工作台装载页输出 React 资源与 bootstrap", async (
     {
       config: createDefaultConfigFile(),
       activeRequestId: null,
-      selectedHistoryId: null,
       activeEnvironmentId: null,
       draft: createDefaultRequest("工作台装载"),
-      history: [],
       response: null,
       requestRunning: false,
       loadTestProfile: {

@@ -2,38 +2,42 @@ import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import * as path from "path";
 import {
-  buildHistoryResponseKey,
+  buildRequestUrlKey,
   createDefaultCollection,
   createDefaultConfigFile,
+  createDefaultEnvironment,
   createDefaultRequest,
-  createEmptyHistory,
   createNowIsoString,
   HTTP_CLIENT_CONFIG_FILE,
   HTTP_CLIENT_CONFIG_VERSION,
-  HTTP_CLIENT_HISTORY_LIMIT,
+  HTTP_CLIENT_DEFAULT_COLLECTION_ID,
+  HTTP_CLIENT_DEFAULT_COLLECTION_NAME,
   HttpClientConfigFile,
   HttpClientDraftState,
   HttpClientSnapshot,
   HttpClientStateStore,
   HttpCollectionEntity,
   HttpEnvironmentEntity,
-  HttpHistoryRecord,
   HttpRequestEntity,
-  cloneRequest,
+  HttpResponseResult,
+  clipResponseForSnapshot,
   createHttpKeyValue,
   isHttpMethod,
-  normalizeHistoryRecord,
   sanitizeRequestEntity,
 } from "./types";
 
 const KEY_ACTIVE_REQUEST_ID = "httpClient.activeRequestId";
 const KEY_ACTIVE_ENVIRONMENT_ID = "httpClient.activeEnvironmentId";
-const KEY_HISTORY = "httpClient.history";
 const KEY_LAST_LOAD_PROFILE = "httpClient.lastLoadProfile";
 const KEY_SCRATCH_DRAFT = "httpClient.scratchDraft";
 
 function getDraftKey(requestId: string): string {
   return `httpClient.draft.${requestId}`;
+}
+
+export interface HttpClientStoreRequestLookup {
+  request: HttpRequestEntity;
+  collection: HttpCollectionEntity;
 }
 
 export class HttpClientStore {
@@ -74,21 +78,31 @@ export class HttpClientStore {
   }
 
   private async loadOrCreateConfig(): Promise<HttpClientConfigFile> {
+    let rawText: string;
     try {
-      await fs.access(this.configPath);
+      rawText = await fs.readFile(this.configPath, "utf8");
     } catch {
       const initialConfig = createDefaultConfigFile();
       await this.writeConfig(initialConfig);
       return this.configCache ?? initialConfig;
     }
-    return this.loadConfigFromDisk();
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(rawText);
+    } catch (error) {
+      throw new Error(`mx_http_client.json 解析失败: ${(error as Error).message}`);
+    }
+    const normalized = normalizeConfig(raw);
+    this.configCache = normalized;
+    await this.writeConfig(normalized);
+    return normalized;
   }
 
   public async loadSnapshot(): Promise<HttpClientSnapshot> {
     const config = await this.ensureInitialized();
     return {
       config,
-      history: this.getHistory(),
       activeRequestId: this.getActiveRequestId(),
       activeEnvironmentId: this.getActiveEnvironmentId(),
     };
@@ -98,27 +112,7 @@ export class HttpClientStore {
     if (this.configCache) {
       return this.configCache;
     }
-
-    return this.loadConfigFromDisk();
-  }
-
-  private async loadConfigFromDisk(): Promise<HttpClientConfigFile> {
-    const rawText = await fs.readFile(this.configPath, "utf8");
-    let raw: unknown;
-    try {
-      raw = JSON.parse(rawText);
-    } catch (error) {
-      throw new Error(`mx_http_client.json 解析失败: ${(error as Error).message}`);
-    }
-    const normalized = normalizeConfig(raw);
-    if (normalized.version !== HTTP_CLIENT_CONFIG_VERSION) {
-      normalized.version = HTTP_CLIENT_CONFIG_VERSION;
-      await this.writeConfig(normalized);
-      return this.configCache ?? normalized;
-    }
-
-    this.configCache = normalized;
-    return normalized;
+    return this.ensureInitialized();
   }
 
   public async writeConfig(config: HttpClientConfigFile): Promise<void> {
@@ -135,82 +129,228 @@ export class HttpClientStore {
     return collection;
   }
 
-  public async renameCollection(collectionId: string, name: string): Promise<void> {
+  public async renameCollection(collectionId: string, name: string): Promise<HttpCollectionEntity> {
     const config = await this.ensureInitialized();
     const collection = config.collections.find((item) => item.id === collectionId);
     if (!collection) {
       throw new Error("集合不存在");
     }
+    if (collection.isDefault) {
+      throw new Error("默认集合不可重命名");
+    }
     collection.name = name.trim() || collection.name;
     collection.updatedAt = createNowIsoString();
     await this.writeConfig(config);
+    return collection;
   }
 
   public async deleteCollection(collectionId: string): Promise<void> {
     const config = await this.ensureInitialized();
-    config.collections = config.collections.filter((item) => item.id !== collectionId);
-    config.requests = config.requests.map((request) =>
-      request.collectionId === collectionId
-        ? {
-            ...request,
-            collectionId: null,
-            updatedAt: createNowIsoString(),
-          }
-        : request
-    );
-    if (config.collections.length === 0) {
-      config.collections.push(createDefaultCollection());
+    const collection = config.collections.find((item) => item.id === collectionId);
+    if (!collection) {
+      throw new Error("集合不存在");
     }
+    if (collection.isDefault) {
+      throw new Error("默认集合不可删除");
+    }
+    const defaultCollection = this.ensureDefaultCollection(config);
+    // 把集合内的请求迁到默认集合
+    for (const request of collection.requests) {
+      defaultCollection.requests.push({
+        ...request,
+        updatedAt: createNowIsoString(),
+      });
+    }
+    config.collections = config.collections.filter((item) => item.id !== collectionId);
     await this.writeConfig(config);
   }
 
-  public async saveRequest(request: HttpRequestEntity): Promise<HttpRequestEntity> {
-    const config = await this.ensureInitialized();
-    const normalized = sanitizeRequestEntity({
-      ...request,
-      createdAt: request.createdAt || createNowIsoString(),
-    });
-    if (!normalized.collectionId) {
-      normalized.collectionId = config.collections[0]?.id ?? createDefaultCollection().id;
-      if (config.collections.length === 0) {
-        config.collections.push({
-          id: normalized.collectionId,
-          name: "默认集合",
-          createdAt: createNowIsoString(),
-          updatedAt: createNowIsoString(),
-        });
+  public getDefaultCollection(config: HttpClientConfigFile = this.configCache ?? createDefaultConfigFile()): HttpCollectionEntity {
+    return this.ensureDefaultCollection(config);
+  }
+
+  private ensureDefaultCollection(config: HttpClientConfigFile): HttpCollectionEntity {
+    const existing = config.collections.find((item) => item.isDefault);
+    if (existing) {
+      existing.id = HTTP_CLIENT_DEFAULT_COLLECTION_ID;
+      existing.name = HTTP_CLIENT_DEFAULT_COLLECTION_NAME;
+      existing.isDefault = true;
+      this.absorbLegacyDefaultCollections(config, existing);
+      return existing;
+    }
+    // 老 config 没有 isDefault 字段, 但可能已经有 name = "默认集合" 的集合.
+    // 把它的 requests 合并过来, 升级为真默认集合, 删掉重复项.
+    const legacy = config.collections.find(
+      (item) => item.name === HTTP_CLIENT_DEFAULT_COLLECTION_NAME && item.id !== HTTP_CLIENT_DEFAULT_COLLECTION_ID
+    );
+    if (legacy) {
+      legacy.id = HTTP_CLIENT_DEFAULT_COLLECTION_ID;
+      legacy.name = HTTP_CLIENT_DEFAULT_COLLECTION_NAME;
+      legacy.isDefault = true;
+      config.collections = config.collections.filter(
+        (item) => item.id === HTTP_CLIENT_DEFAULT_COLLECTION_ID || !this.isLegacyDefaultDuplicate(item, legacy)
+      );
+      this.absorbLegacyDefaultCollections(config, legacy);
+      return legacy;
+    }
+    const collection: HttpCollectionEntity = {
+      id: HTTP_CLIENT_DEFAULT_COLLECTION_ID,
+      name: HTTP_CLIENT_DEFAULT_COLLECTION_NAME,
+      isDefault: true,
+      requests: [],
+      createdAt: createNowIsoString(),
+      updatedAt: createNowIsoString(),
+    };
+    config.collections.unshift(collection);
+    return collection;
+  }
+
+  private absorbLegacyDefaultCollections(config: HttpClientConfigFile, target: HttpCollectionEntity): void {
+    // 收尾: 任何还残留的 name = "默认集合" 但不是 target 自身的集合,
+    // 把它的 requests 合并到 target, 然后删掉.
+    const duplicates = config.collections.filter(
+      (item) => item.id !== target.id && item.name === HTTP_CLIENT_DEFAULT_COLLECTION_NAME
+    );
+    if (duplicates.length === 0) {
+      return;
+    }
+    const existingRequestIds = new Set(target.requests.map((r) => r.id));
+    for (const dup of duplicates) {
+      for (const req of dup.requests) {
+        if (!existingRequestIds.has(req.id)) {
+          target.requests.unshift({ ...req, updatedAt: createNowIsoString() });
+          existingRequestIds.add(req.id);
+        }
       }
     }
-    const index = config.requests.findIndex((item) => item.id === normalized.id);
-    if (index >= 0) {
-      const existed = config.requests[index];
-      config.requests[index] = {
-        ...normalized,
-        createdAt: existed.createdAt,
-      };
-    } else {
-      config.requests.push(normalized);
+    config.collections = config.collections.filter((item) => item.id === target.id || item.name !== HTTP_CLIENT_DEFAULT_COLLECTION_NAME);
+  }
+
+  private isLegacyDefaultDuplicate(item: HttpCollectionEntity, primary: HttpCollectionEntity): boolean {
+    if (item.id === primary.id) {
+      return false;
     }
+    return item.name === HTTP_CLIENT_DEFAULT_COLLECTION_NAME;
+  }
+
+  public findRequestByUrl(method: string, url: string): HttpClientStoreRequestLookup | null {
+    const config = this.configCache;
+    if (!config) {
+      return null;
+    }
+    const key = buildRequestUrlKey(method, url);
+    for (const collection of config.collections) {
+      const request = collection.requests.find((item) => buildRequestUrlKey(item.method, item.url) === key);
+      if (request) {
+        return { request, collection };
+      }
+    }
+    return null;
+  }
+
+  public findRequestById(requestId: string): HttpClientStoreRequestLookup | null {
+    const config = this.configCache;
+    if (!config) {
+      return null;
+    }
+    for (const collection of config.collections) {
+      const request = collection.requests.find((item) => item.id === requestId);
+      if (request) {
+        return { request, collection };
+      }
+    }
+    return null;
+  }
+
+  public async saveRequest(
+    request: HttpRequestEntity,
+    options: { collectionId?: string | null; allowCreateInDefault?: boolean } = {}
+  ): Promise<HttpRequestEntity> {
+    const config = await this.ensureInitialized();
+    const lookup = this.findRequestById(request.id);
+    const targetCollection = this.resolveTargetCollection(config, lookup?.collection.id ?? options.collectionId ?? null);
+
+    const normalized = sanitizeRequestEntity({
+      ...request,
+      createdAt: lookup?.request.createdAt ?? request.createdAt ?? createNowIsoString(),
+    });
+
+    if (lookup) {
+      lookup.collection.requests = lookup.collection.requests.map((item) =>
+        item.id === normalized.id ? { ...normalized, createdAt: lookup.request.createdAt } : item
+      );
+    } else {
+      targetCollection.requests.unshift({ ...normalized, createdAt: normalized.createdAt });
+    }
+
     await this.writeConfig(config);
     await this.clearDraft(normalized.id);
     await this.setActiveRequestId(normalized.id);
     return normalized;
   }
 
-  public async renameRequest(requestId: string, name: string): Promise<void> {
+  public async upsertRequestByUrl(
+    request: HttpRequestEntity,
+    snapshot: HttpResponseResult,
+    fallbackCollectionId: string | null = null
+  ): Promise<HttpRequestEntity> {
     const config = await this.ensureInitialized();
-    const request = config.requests.find((item) => item.id === requestId);
-    if (!request) {
+    const lookup = this.findRequestByUrl(request.method, request.url);
+    const targetCollection = lookup?.collection ?? this.resolveTargetCollection(config, fallbackCollectionId);
+    const clipped = clipResponseForSnapshot(snapshot);
+    const now = createNowIsoString();
+
+    const nextRequest: HttpRequestEntity = sanitizeRequestEntity({
+      ...(lookup?.request ?? request),
+      ...request,
+      id: lookup?.request.id ?? request.id,
+      createdAt: lookup?.request.createdAt ?? request.createdAt ?? now,
+      lastStatus: snapshot.status,
+      lastDurationMs: snapshot.meta.durationMs,
+      lastExecutedAt: now,
+      lastResponseSnapshot: clipped.response,
+      updatedAt: now,
+    });
+
+    if (lookup) {
+      targetCollection.requests = targetCollection.requests.map((item) =>
+        item.id === nextRequest.id ? { ...nextRequest, createdAt: lookup.request.createdAt } : item
+      );
+    } else {
+      targetCollection.requests.unshift({ ...nextRequest, createdAt: nextRequest.createdAt });
+    }
+
+    await this.writeConfig(config);
+    await this.clearDraft(nextRequest.id);
+    await this.setActiveRequestId(nextRequest.id);
+    return nextRequest;
+  }
+
+  public async renameRequest(requestId: string, name: string): Promise<HttpRequestEntity> {
+    const config = await this.ensureInitialized();
+    const lookup = this.findRequestById(requestId);
+    if (!lookup) {
       throw new Error("请求不存在");
     }
-    request.name = name.trim() || request.name;
-    request.updatedAt = createNowIsoString();
+    lookup.request.name = name.trim() || lookup.request.name;
+    lookup.request.updatedAt = createNowIsoString();
     await this.writeConfig(config);
+    return lookup.request;
   }
 
   public async deleteRequest(requestId: string): Promise<void> {
     const config = await this.ensureInitialized();
-    config.requests = config.requests.filter((item) => item.id !== requestId);
+    let removed = false;
+    for (const collection of config.collections) {
+      const before = collection.requests.length;
+      collection.requests = collection.requests.filter((item) => item.id !== requestId);
+      if (collection.requests.length !== before) {
+        removed = true;
+      }
+    }
+    if (!removed) {
+      throw new Error("请求不存在");
+    }
     await this.writeConfig(config);
     await this.clearDraft(requestId);
     if (this.getActiveRequestId() === requestId) {
@@ -218,35 +358,41 @@ export class HttpClientStore {
     }
   }
 
-  public async duplicateRequest(requestId: string): Promise<HttpRequestEntity> {
+  public async duplicateRequest(requestId: string, options: { collectionId?: string | null } = {}): Promise<HttpRequestEntity> {
     const config = await this.ensureInitialized();
-    const request = config.requests.find((item) => item.id === requestId);
-    if (!request) {
+    const lookup = this.findRequestById(requestId);
+    if (!lookup) {
       throw new Error("请求不存在");
     }
+    const target = this.resolveTargetCollection(config, options.collectionId ?? lookup.collection.id);
     const now = createNowIsoString();
     const duplicate = sanitizeRequestEntity({
-      ...cloneRequest(request),
-      id: randomUUID(),
-      name: `${request.name} 副本`,
+      ...lookup.request,
+      id: randomUuid(),
+      name: `${lookup.request.name} 副本`,
       createdAt: now,
       updatedAt: now,
     });
-    config.requests.push(duplicate);
+    target.requests.unshift({ ...duplicate, createdAt: now });
     await this.writeConfig(config);
     await this.setActiveRequestId(duplicate.id);
     return duplicate;
   }
 
-  public async setRequestFavorite(requestId: string, favorite: boolean): Promise<void> {
+  public async moveRequest(requestId: string, targetCollectionId: string): Promise<HttpRequestEntity> {
     const config = await this.ensureInitialized();
-    const request = config.requests.find((item) => item.id === requestId);
-    if (!request) {
+    const lookup = this.findRequestById(requestId);
+    if (!lookup) {
       throw new Error("请求不存在");
     }
-    request.favorite = favorite;
-    request.updatedAt = createNowIsoString();
+    const target = this.resolveTargetCollection(config, targetCollectionId);
+    if (target.id === lookup.collection.id) {
+      return lookup.request;
+    }
+    target.requests.unshift({ ...lookup.request, updatedAt: createNowIsoString() });
+    lookup.collection.requests = lookup.collection.requests.filter((item) => item.id !== requestId);
     await this.writeConfig(config);
+    return lookup.request;
   }
 
   public async createScratchRequest(
@@ -254,11 +400,8 @@ export class HttpClientStore {
     requestOverride?: HttpRequestEntity
   ): Promise<HttpRequestEntity> {
     const request = requestOverride
-      ? sanitizeRequestEntity({
-          ...requestOverride,
-          collectionId: requestOverride.collectionId ?? collectionId,
-        })
-      : createDefaultRequest("新请求", collectionId);
+      ? sanitizeRequestEntity(requestOverride)
+      : createDefaultRequest("新请求");
     await this.saveScratchDraft(request);
     await this.setActiveRequestId(request.id);
     return request;
@@ -268,7 +411,7 @@ export class HttpClientStore {
     const config = await this.ensureInitialized();
     const now = createNowIsoString();
     const environment: HttpEnvironmentEntity = {
-      id: randomUUID(),
+      id: randomUuid(),
       name: name.trim() || "新环境",
       variables: {
         baseUrl: "",
@@ -347,35 +490,6 @@ export class HttpClientStore {
     }
   }
 
-  public getHistory(): HttpHistoryRecord[] {
-    const history = this.stateStore.get<HttpHistoryRecord[]>(KEY_HISTORY, createEmptyHistory()) ?? [];
-    return history.map((record) =>
-      normalizeHistoryRecord({
-        ...record,
-        request: normalizeRequest(record.request),
-      })
-    );
-  }
-
-  public async recordHistory(record: HttpHistoryRecord): Promise<void> {
-    const all = this.getHistory();
-    const key = buildHistoryResponseKey(record.request.method, record.request.url);
-    const existing = all.find((item) => buildHistoryResponseKey(item.request.method, item.request.url) === key);
-    const merged: HttpHistoryRecord = normalizeHistoryRecord({
-      ...record,
-      id: existing?.id ?? record.id,
-    });
-    const nextHistory = [merged, ...all.filter((item) => item.id !== merged.id)].slice(
-      0,
-      HTTP_CLIENT_HISTORY_LIMIT
-    );
-    await this.stateStore.update(KEY_HISTORY, nextHistory);
-  }
-
-  public getHistoryItem(historyId: string): HttpHistoryRecord | null {
-    return this.getHistory().find((item) => item.id === historyId) ?? null;
-  }
-
   public getActiveRequestId(): string | null {
     return this.stateStore.get<string | null>(KEY_ACTIVE_REQUEST_ID, null) ?? null;
   }
@@ -399,6 +513,16 @@ export class HttpClientStore {
   public async setLastLoadProfile(profile: unknown): Promise<void> {
     await this.stateStore.update(KEY_LAST_LOAD_PROFILE, profile);
   }
+
+  private resolveTargetCollection(config: HttpClientConfigFile, requestedId: string | null): HttpCollectionEntity {
+    if (requestedId) {
+      const target = config.collections.find((item) => item.id === requestedId);
+      if (target) {
+        return target;
+      }
+    }
+    return this.ensureDefaultCollection(config);
+  }
 }
 
 function normalizeConfig(raw: unknown): HttpClientConfigFile {
@@ -409,24 +533,14 @@ function normalizeConfig(raw: unknown): HttpClientConfigFile {
   const value = raw as Partial<HttpClientConfigFile>;
   const collections = Array.isArray(value.collections)
     ? value.collections
-        .filter((item): item is HttpCollectionEntity => Boolean(item && typeof item === "object"))
-        .map((item) => ({
-          id: typeof item.id === "string" && item.id ? item.id : randomUUID(),
-          name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : "未命名集合",
-          createdAt: typeof item.createdAt === "string" ? item.createdAt : createNowIsoString(),
-          updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : createNowIsoString(),
-        }))
-    : fallback.collections;
-  const requests = Array.isArray(value.requests)
-    ? value.requests
-        .filter((item): item is HttpRequestEntity => Boolean(item && typeof item === "object"))
-        .map((item) => normalizeRequest(item))
-    : fallback.requests;
+        .filter((item) => Boolean(item && typeof item === "object"))
+        .map((item) => normalizeCollection(item as Partial<HttpCollectionEntity>))
+    : [];
   const environments = Array.isArray(value.environments)
     ? value.environments
         .filter((item): item is HttpEnvironmentEntity => Boolean(item && typeof item === "object"))
         .map((item) => ({
-          id: typeof item.id === "string" && item.id ? item.id : randomUUID(),
+          id: typeof item.id === "string" && item.id ? item.id : randomUuid(),
           name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : "未命名环境",
           variables: typeof item.variables === "object" && item.variables ? { ...item.variables } : {},
           createdAt: typeof item.createdAt === "string" ? item.createdAt : createNowIsoString(),
@@ -434,19 +548,62 @@ function normalizeConfig(raw: unknown): HttpClientConfigFile {
         }))
     : fallback.environments;
 
+  const collectionsFinal = ensureDefaultCollectionInList(collections.length > 0 ? collections : [normalizeCollection({})]);
   return {
-    version: typeof value.version === "number" ? value.version : HTTP_CLIENT_CONFIG_VERSION,
-    collections: collections.length > 0 ? collections : fallback.collections,
-    requests,
+    version: HTTP_CLIENT_CONFIG_VERSION,
+    collections: collectionsFinal,
     environments: environments.length > 0 ? environments : fallback.environments,
   };
+}
+
+function normalizeCollection(input: Partial<HttpCollectionEntity>): HttpCollectionEntity {
+  const now = createNowIsoString();
+  const requests = Array.isArray(input.requests)
+    ? input.requests
+        .filter((item): item is HttpRequestEntity => Boolean(item && typeof item === "object"))
+        .map((item) => normalizeRequest(item))
+    : [];
+  return {
+    id: typeof input.id === "string" && input.id ? input.id : randomUuid(),
+    name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : "未命名集合",
+    isDefault: Boolean(input.isDefault),
+    requests,
+    createdAt: typeof input.createdAt === "string" ? input.createdAt : now,
+    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : now,
+  };
+}
+
+function ensureDefaultCollectionInList(collections: HttpCollectionEntity[]): HttpCollectionEntity[] {
+  const next = collections.map((item) => ({ ...item }));
+  let existing = next.find((item) => item.isDefault);
+  if (!existing) {
+    // 老 config 没有 isDefault 字段, 但可能 name 已经是 "默认集合"
+    existing = next.find((item) => item.name === HTTP_CLIENT_DEFAULT_COLLECTION_NAME);
+    if (existing) {
+      existing.isDefault = true;
+    }
+  }
+  if (existing) {
+    existing.id = HTTP_CLIENT_DEFAULT_COLLECTION_ID;
+    existing.name = HTTP_CLIENT_DEFAULT_COLLECTION_NAME;
+    return next;
+  }
+  const collection: HttpCollectionEntity = {
+    id: HTTP_CLIENT_DEFAULT_COLLECTION_ID,
+    name: HTTP_CLIENT_DEFAULT_COLLECTION_NAME,
+    isDefault: true,
+    requests: [],
+    createdAt: createNowIsoString(),
+    updatedAt: createNowIsoString(),
+  };
+  next.unshift(collection);
+  return next;
 }
 
 function normalizeRequest(input: HttpRequestEntity): HttpRequestEntity {
   const now = createNowIsoString();
   return {
-    id: typeof input.id === "string" && input.id ? input.id : randomUUID(),
-    collectionId: typeof input.collectionId === "string" ? input.collectionId : null,
+    id: typeof input.id === "string" && input.id ? input.id : randomUuid(),
     name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : "未命名请求",
     method: isHttpMethod(input.method) ? input.method : "GET",
     url: typeof input.url === "string" ? input.url : "",
@@ -454,7 +611,10 @@ function normalizeRequest(input: HttpRequestEntity): HttpRequestEntity {
     headers: Array.isArray(input.headers) && input.headers.length > 0 ? input.headers.map(normalizeKeyValue) : [createHttpKeyValue()],
     bodyMode: input.bodyMode === "raw" || input.bodyMode === "json" || input.bodyMode === "none" ? input.bodyMode : "none",
     bodyText: typeof input.bodyText === "string" ? input.bodyText : "",
-    favorite: Boolean(input.favorite),
+    lastStatus: typeof input.lastStatus === "number" ? input.lastStatus : null,
+    lastDurationMs: typeof input.lastDurationMs === "number" ? input.lastDurationMs : null,
+    lastExecutedAt: typeof input.lastExecutedAt === "string" ? input.lastExecutedAt : null,
+    lastResponseSnapshot: input.lastResponseSnapshot && typeof input.lastResponseSnapshot === "object" ? input.lastResponseSnapshot : null,
     createdAt: typeof input.createdAt === "string" ? input.createdAt : now,
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : now,
   };
@@ -462,9 +622,21 @@ function normalizeRequest(input: HttpRequestEntity): HttpRequestEntity {
 
 function normalizeKeyValue(input: Partial<HttpRequestEntity["params"][number]>): HttpRequestEntity["params"][number] {
   return {
-    id: typeof input.id === "string" && input.id ? input.id : randomUUID(),
+    id: typeof input.id === "string" && input.id ? input.id : randomUuid(),
     key: typeof input.key === "string" ? input.key : "",
     value: typeof input.value === "string" ? input.value : "",
     enabled: input.enabled !== false,
   };
+}
+
+function cloneRequest(request: HttpRequestEntity): HttpRequestEntity {
+  return {
+    ...request,
+    params: request.params.map((item) => ({ ...item })),
+    headers: request.headers.map((item) => ({ ...item })),
+  };
+}
+
+function randomUuid(): string {
+  return randomUUID();
 }

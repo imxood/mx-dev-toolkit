@@ -2,7 +2,6 @@ import type {
   ExtensionToWebviewMessage,
   HttpBodyMode,
   HttpClientViewState,
-  HttpHistoryRecord,
   HttpKeyValue,
   HttpLoadTestProfile,
   HttpRequestEntity,
@@ -25,7 +24,6 @@ type WorkbenchSessionPatch = Partial<
   Pick<
     HttpClientViewState,
     | "activeRequestId"
-    | "selectedHistoryId"
     | "activeEnvironmentId"
     | "draft"
     | "response"
@@ -52,16 +50,13 @@ export function createFallbackViewState(): HttpClientViewState {
   const draft = createFallbackDraft(now);
   return {
     config: {
-      version: 1,
+      version: 2,
       collections: [],
-      requests: [],
       environments: [],
     },
     activeRequestId: null,
-    selectedHistoryId: null,
     activeEnvironmentId: null,
     draft,
-    history: [],
     response: null,
     requestRunning: false,
     loadTestProfile: {
@@ -171,15 +166,16 @@ export function cloneViewState(viewState: HttpClientViewState): HttpClientViewSt
     ...viewState,
     config: {
       version: viewState.config.version,
-      collections: viewState.config.collections.map((collection) => ({ ...collection })),
-      requests: viewState.config.requests.map((request) => cloneRequest(request)),
+      collections: viewState.config.collections.map((collection) => ({
+        ...collection,
+        requests: collection.requests.map((request) => cloneRequest(request)),
+      })),
       environments: viewState.config.environments.map((environment) => ({
         ...environment,
         variables: { ...environment.variables },
       })),
     },
     draft: viewState.draft ? cloneRequest(viewState.draft) : null,
-    history: viewState.history.map((item) => cloneHistoryRecord(item)),
     response: viewState.response ? cloneResponse(viewState.response) : null,
     loadTestProfile: cloneLoadTestProfile(viewState.loadTestProfile),
     loadTestResult: viewState.loadTestResult ? cloneLoadTestResult(viewState.loadTestResult) : null,
@@ -192,6 +188,7 @@ export function cloneRequest(request: HttpRequestEntity): HttpRequestEntity {
     ...request,
     params: request.params.map((item) => ({ ...item })),
     headers: request.headers.map((item) => ({ ...item })),
+    lastResponseSnapshot: request.lastResponseSnapshot ? cloneResponse(request.lastResponseSnapshot) : null,
   };
 }
 
@@ -205,9 +202,6 @@ export function patchWorkbenchSession(
 
   if ("activeRequestId" in patch) {
     nextState.activeRequestId = patch.activeRequestId ?? null;
-  }
-  if ("selectedHistoryId" in patch) {
-    nextState.selectedHistoryId = patch.selectedHistoryId ?? null;
   }
   if ("activeEnvironmentId" in patch) {
     nextState.activeEnvironmentId = patch.activeEnvironmentId ?? null;
@@ -265,7 +259,6 @@ export function createScratchRequestLocally(
 ): HttpClientViewState {
   return patchWorkbenchSession(currentViewState, {
     activeRequestId: request.id,
-    selectedHistoryId: null,
     draft: request,
     response: null,
     dirty: true,
@@ -277,39 +270,50 @@ export function selectRequestLocally(
   currentViewState: HttpClientViewState,
   requestId: string
 ): HttpClientViewState {
-  const savedRequest = currentViewState.config.requests.find((item) => item.id === requestId) ?? null;
-  if (!savedRequest) {
+  const lookup = findRequestInCollections(currentViewState, requestId);
+  if (!lookup) {
     return currentViewState;
   }
 
-  const draft = currentViewState.draft?.id === requestId ? currentViewState.draft : savedRequest;
+  const snapshot = lookup.request.lastResponseSnapshot;
+  const draft = currentViewState.draft?.id === requestId ? currentViewState.draft : cloneRequest(lookup.request);
+
   return patchWorkbenchSession(currentViewState, {
     activeRequestId: requestId,
-    selectedHistoryId: null,
     draft,
-    response: null,
+    response: snapshot ? cloneResponse(snapshot) : null,
     dirty: currentViewState.draft?.id === requestId ? currentViewState.dirty : false,
     responseTab: "body",
   });
 }
 
-export function selectHistoryLocally(
+export function moveRequestLocally(
   currentViewState: HttpClientViewState,
-  historyId: string
+  requestId: string,
+  targetCollectionId: string
 ): HttpClientViewState {
-  const history = currentViewState.history.find((item) => item.id === historyId) ?? null;
-  if (!history) {
+  const lookup = findRequestInCollections(currentViewState, requestId);
+  if (!lookup || lookup.collection.id === targetCollectionId) {
     return currentViewState;
   }
-
-  return patchWorkbenchSession(currentViewState, {
-    activeRequestId: history.request.id,
-    selectedHistoryId: historyId,
-    draft: history.request,
-    response: null,
-    dirty: false,
-    responseTab: "body",
-  });
+  const request = lookup.request;
+  const now = new Date().toISOString();
+  const movedRequest = { ...cloneRequest(request), updatedAt: now };
+  return {
+    ...currentViewState,
+    config: {
+      ...currentViewState.config,
+      collections: currentViewState.config.collections.map((collection) => {
+        if (collection.id === lookup.collection.id) {
+          return { ...collection, requests: collection.requests.filter((item) => item.id !== requestId) };
+        }
+        if (collection.id === targetCollectionId) {
+          return { ...collection, requests: [movedRequest, ...collection.requests] };
+        }
+        return collection;
+      }),
+    },
+  };
 }
 
 export function setEnvironmentLocally(
@@ -319,49 +323,6 @@ export function setEnvironmentLocally(
   return patchWorkbenchSession(currentViewState, {
     activeEnvironmentId: environmentId,
   });
-}
-
-export function toggleFavoriteLocally(
-  currentViewState: HttpClientViewState,
-  requestId: string,
-  favorite: boolean
-): HttpClientViewState {
-  const hasSavedRequest = currentViewState.config.requests.some((request) => request.id === requestId);
-  if (!hasSavedRequest && currentViewState.draft?.id !== requestId) {
-    return currentViewState;
-  }
-
-  const nextDraft =
-    currentViewState.draft?.id === requestId
-      ? {
-          ...cloneRequest(currentViewState.draft),
-          favorite,
-        }
-      : currentViewState.draft;
-
-  return {
-    ...patchWorkbenchSession(
-      currentViewState,
-      nextDraft
-        ? {
-            draft: nextDraft,
-          }
-        : {}
-    ),
-    config: hasSavedRequest
-      ? {
-          ...currentViewState.config,
-          requests: currentViewState.config.requests.map((request) =>
-            request.id === requestId
-              ? {
-                  ...request,
-                  favorite,
-                }
-              : request
-          ),
-        }
-      : currentViewState.config,
-  };
 }
 
 export function buildUrlHint(rawUrl: string): string {
@@ -506,22 +467,12 @@ export function escapeResponseText(source: string): string {
   return output;
 }
 
-export function getSelectedHistoryOrdinal(history: HttpHistoryRecord[], selectedHistoryId: string | null, limit = 30): number | null {
-  if (!selectedHistoryId) {
-    return null;
-  }
-
-  const index = history.slice(0, limit).findIndex((item) => item.id === selectedHistoryId);
-  return index >= 0 ? index + 1 : null;
-}
-
 export function isScratchDraft(viewState: HttpClientViewState): boolean {
   const draft = viewState.draft;
   if (!draft) {
     return false;
   }
-
-  return !viewState.config.requests.some((request) => request.id === draft.id);
+  return !findRequestInCollections(viewState, draft.id);
 }
 
 export function createEmptyKeyValue(createId: () => string): HttpKeyValue {
@@ -650,12 +601,19 @@ function classifyJsonToken(token: string): string {
   return "json-number";
 }
 
-function cloneHistoryRecord(item: HttpHistoryRecord): HttpHistoryRecord {
-  return {
-    ...item,
-    request: cloneRequest(item.request),
-    responseSummary: { ...item.responseSummary },
-  };
+interface RequestInCollectionLookup {
+  request: HttpRequestEntity;
+  collection: { id: string; requests: HttpRequestEntity[] };
+}
+
+function findRequestInCollections(viewState: HttpClientViewState, requestId: string): RequestInCollectionLookup | null {
+  for (const collection of viewState.config.collections) {
+    const request = collection.requests.find((item) => item.id === requestId);
+    if (request) {
+      return { request, collection };
+    }
+  }
+  return null;
 }
 
 function cloneLoadTestProfile(profile: HttpLoadTestProfile): HttpLoadTestProfile {
@@ -692,7 +650,6 @@ function cloneResponse(response: HttpResponseResult): HttpResponseResult {
 function createFallbackDraft(now: string): HttpRequestEntity {
   return {
     id: "fallback-request",
-    collectionId: null,
     name: "新请求",
     method: "GET",
     url: "",
@@ -714,7 +671,10 @@ function createFallbackDraft(now: string): HttpRequestEntity {
     ],
     bodyMode: "json",
     bodyText: "",
-    favorite: false,
+    lastStatus: null,
+    lastDurationMs: null,
+    lastExecutedAt: null,
+    lastResponseSnapshot: null,
     createdAt: now,
     updatedAt: now,
   };

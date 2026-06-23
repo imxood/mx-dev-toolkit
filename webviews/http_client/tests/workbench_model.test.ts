@@ -10,21 +10,19 @@ import {
   createFallbackViewState,
   createInitialUiState,
   getDisplayedResponseText,
-  getSelectedHistoryOrdinal,
   highlightText,
   isScratchDraft,
-  selectHistoryLocally,
+  moveRequestLocally,
   selectRequestLocally,
   setEnvironmentLocally,
   syncParamsFromUrl,
   syncUrlFromParams,
-  toggleFavoriteLocally,
   updateDraftLocally,
 } from "../shared/workbench_model";
 
-test("workbench_model: React workbench 纯逻辑与旧协议保持一致", async () => {
+test("workbench_model: 纯逻辑函数与新协议保持一致", async () => {
   const logger = await createTestLogger("http_client_workbench_model.txt");
-  await logger.flow("验证 React workbench 共享纯函数与现有 HTTP Client 协议保持一致");
+  await logger.flow("验证 React workbench 共享纯函数在快照协议下的正确性");
 
   await logger.step("验证 URL 校验提示文案");
   assert.equal(buildUrlHint(""), "URL 不能为空");
@@ -69,26 +67,16 @@ test("workbench_model: React workbench 纯逻辑与旧协议保持一致", async
   const rawHighlighted = highlightText("first line\n获取成功\nsecond line", "成功");
   assert.match(rawHighlighted, /<mark>成功<\/mark>/);
 
-  await logger.step("验证历史序号和新建草稿识别");
-  const historyViewState = createFallbackViewState();
-  historyViewState.history = [
-    {
-      id: "history-1",
-      request,
-      responseSummary: {
-        status: 200,
-        statusText: "OK",
-        durationMs: 20,
-        ok: true,
-        sizeBytes: 16,
-      },
-      environmentId: null,
-      executedAt: "2026-04-14T08:00:00.000Z",
-    },
-  ];
-  historyViewState.selectedHistoryId = "history-1";
-  assert.equal(getSelectedHistoryOrdinal(historyViewState.history, historyViewState.selectedHistoryId), 1);
-  assert.equal(isScratchDraft(historyViewState), true);
+  await logger.step("验证未保存草稿识别和 lastResponseSnapshot 加载");
+  const state = createFallbackViewState();
+  state.config = createDefaultConfigFile();
+  state.activeRequestId = state.config.collections[0].id;
+  state.config.collections[0].requests[0] = {
+    ...state.config.collections[0].requests[0],
+    lastStatus: 200,
+    lastResponseSnapshot: response,
+  };
+  assert.equal(isScratchDraft(state), true);
 
   await logger.step("验证协议消息应用后的状态收敛");
   const currentViewState = createFallbackViewState();
@@ -151,65 +139,61 @@ test("workbench_model: React workbench 纯逻辑与旧协议保持一致", async
   await logger.conclusion("React workbench 共享纯函数已具备稳定的自动化回归保护");
 });
 
-test("workbench_model: local-first session patch 应复用冷数据引用", async () => {
+test("workbench_model: local-first session patch 与快照自动加载", async () => {
   const logger = await createTestLogger("http_client_workbench_model.txt");
-  await logger.flow("验证 local-first 架构下, 请求切换与草稿编辑只更新会话态, 不全量复制 config 和 history");
+  await logger.flow("验证 local-first 架构下, selectRequest 自动加载 lastResponseSnapshot, moveRequest 跨集合搬运");
 
   const currentViewState = createFallbackViewState();
   currentViewState.config = createDefaultConfigFile();
-  const requestA = createDefaultRequest("请求 A", currentViewState.config.collections[0].id);
-  const requestB = createDefaultRequest("请求 B", currentViewState.config.collections[0].id);
-  currentViewState.config.requests = [requestA, requestB];
+  const requestA = createDefaultRequest("请求 A");
+  const requestB = createDefaultRequest("请求 B");
+  currentViewState.config.collections[0].requests = [requestA, requestB];
   currentViewState.draft = requestA;
   currentViewState.activeRequestId = requestA.id;
-  currentViewState.history = [
-    {
-      id: "history-1",
-      request: requestB,
-      responseSummary: {
-        status: 200,
-        statusText: "OK",
-        durationMs: 28,
-        ok: true,
-        sizeBytes: 64,
-      },
-      environmentId: null,
-      executedAt: "2026-04-16T08:00:00.000Z",
-    },
-  ];
 
-  await logger.step("切换保存请求时, config 和 history 应保持原引用");
-  const selectedRequestState = selectRequestLocally(currentViewState, requestB.id);
-  assert.equal(selectedRequestState.activeRequestId, requestB.id);
-  assert.strictEqual(selectedRequestState.config, currentViewState.config);
-  assert.strictEqual(selectedRequestState.history, currentViewState.history);
-  assert.notStrictEqual(selectedRequestState.draft, requestB);
+  await logger.step("selectRequest 应自动加载 lastResponseSnapshot 到 response");
+  const response = createResponseResult();
+  requestB.lastStatus = 200;
+  requestB.lastResponseSnapshot = response;
+  const selected = selectRequestLocally(currentViewState, requestB.id);
+  assert.equal(selected.activeRequestId, requestB.id);
+  assert.equal(selected.response?.status, 200);
+  assert.equal(selected.dirty, false);
 
-  await logger.step("编辑草稿与切换环境时, 只更新会话态");
-  const updatedDraftState = updateDraftLocally(selectedRequestState, (draft) => ({
+  await logger.step("编辑草稿与切换环境只更新会话态, 不重建 config");
+  const updatedDraftState = updateDraftLocally(selected, (draft) => ({
     ...draft,
     url: "https://example.com/local-first",
   }));
   const selectedEnvironmentState = setEnvironmentLocally(updatedDraftState, "env-1");
   assert.equal(updatedDraftState.dirty, true);
   assert.equal(selectedEnvironmentState.activeEnvironmentId, "env-1");
-  assert.strictEqual(updatedDraftState.config, selectedRequestState.config);
-  assert.strictEqual(selectedEnvironmentState.history, updatedDraftState.history);
+  assert.strictEqual(updatedDraftState.config, selected.config);
 
-  await logger.step("新建请求, 切换历史和收藏都不应触发全量深拷贝");
-  const scratchRequest = createDefaultRequest("本地新建", currentViewState.config.collections[0].id);
+  await logger.step("新建 scratch request 时, 旧 draft 不应保留");
+  const scratchRequest = createDefaultRequest("本地新建");
   const scratchState = createScratchRequestLocally(selectedEnvironmentState, scratchRequest);
-  const historyState = selectHistoryLocally(scratchState, "history-1");
-  const favoriteState = toggleFavoriteLocally(historyState, requestB.id, true);
-
   assert.equal(scratchState.activeRequestId, scratchRequest.id);
-  assert.equal(historyState.selectedHistoryId, "history-1");
-  assert.equal(favoriteState.config.requests.find((item) => item.id === requestB.id)?.favorite, true);
-  assert.strictEqual(scratchState.config, selectedEnvironmentState.config);
-  assert.strictEqual(historyState.config, scratchState.config);
-  assert.strictEqual(favoriteState.history, historyState.history);
+  assert.notStrictEqual(scratchState.draft, selectedEnvironmentState.draft);
+  assert.equal(scratchState.dirty, true);
 
-  await logger.conclusion("local-first 纯函数已把热路径更新收敛到会话态, 避免冷数据被整包 clone");
+  await logger.step("moveRequest 应把请求从原集合搬到目标集合, 保留快照");
+  const target = {
+    ...createDefaultCollection("target"),
+    id: "target-collection",
+  } as const;
+  currentViewState.config.collections = [
+    currentViewState.config.collections[0],
+    { ...target, requests: [] },
+  ];
+  const moved = moveRequestLocally(currentViewState, requestA.id, target.id);
+  const defaultCollection = moved.config.collections.find((c) => c.isDefault);
+  const targetCollection = moved.config.collections.find((c) => c.id === target.id);
+  assert.equal(defaultCollection?.requests.length, 1);
+  assert.equal(targetCollection?.requests.length, 1);
+  assert.equal(targetCollection?.requests[0].id, requestA.id);
+
+  await logger.conclusion("local-first 纯函数已能正确处理快照自动加载与跨集合搬运");
 });
 
 function createResponseResult(): HttpResponseResult {
@@ -219,7 +203,7 @@ function createResponseResult(): HttpResponseResult {
     statusText: "OK",
     bodyRawText: "{\"message\":\"\\u83b7\\u53d6\\u6210\\u529f\\n\\u4e0b\\u4e00\\u884c\",\"count\":1}",
     bodyText: "{\"message\":\"获取成功\\n下一行\",\"count\":1}",
-    bodyPrettyText: "{\n  \"message\": \"获取成功\\n下一行\",\n  \"count\": 1\n}",
+    bodyPrettyText: "{\n  \"message\": \"获取成功\n下一行\",\n  \"count\": 1\n}",
     isJson: true,
     headers: [
       { key: "content-type", value: "application/json; charset=utf-8" },
@@ -240,6 +224,18 @@ function createResponseResult(): HttpResponseResult {
 
 function createId(): string {
   return `test-id-${idCounter++}`;
+}
+
+function createDefaultCollection(name: string) {
+  const now = new Date().toISOString();
+  return {
+    id: "tmp",
+    name,
+    isDefault: false,
+    requests: [],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 let idCounter = 1;
