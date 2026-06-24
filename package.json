@@ -118,9 +118,7 @@
     "tailwindcss": "4.2.2",
     "typescript": "^5.4.5",
     "vite": "8.0.8",
-    "xml2js": "^0.6.2"
-  },
-  "dependencies": {
+    "xml2js": "^0.6.2",
     "react": "19.2.5",
     "react-dom": "19.2.5",
     "ulid": "^3.0.2"
