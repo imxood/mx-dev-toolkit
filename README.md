@@ -1,6 +1,6 @@
 # Mx Dev Toolkit
 
-最后更新: 2026-04-14
+最后更新: 2026-06-24
 
 Mx Dev Toolkit 是一个模块化的 VS Code 开发工具箱扩展, 当前已经不是单一的 Keil 辅助插件, 而是围绕日常开发工作流组织的一组能力集合。
 
@@ -62,12 +62,12 @@ src/
 ├─ http_client/
 │  ├─ register.ts
 │  ├─ panel.ts
-│  ├─ sidebar_view.ts
 │  ├─ store.ts
 │  ├─ resolver.ts
 │  ├─ runner.ts
 │  ├─ load_runner.ts
 │  ├─ curl_import.ts
+│  ├─ curl_export.ts
 │  ├─ types.ts
 │  ├─ webview/
 │  └─ tests/
@@ -93,9 +93,9 @@ eh_keil_tool/
 
 说明:
 
-- `src/http_client/webview/` 现在主要承担宿主 HTML 装载与兼容层职责。
-- 当前主运行路径不是旧的字符串模板 UI, 而是 `webviews/http_client/` 下的 React 前端。
-- `src/http_client/webview/ui/*` 仍存在, 但不应再被视为当前主 UI 的事实源。
+- `src/http_client/webview/` 现在主要承担宿主 HTML 装载职责。
+- 当前主运行路径是 `webviews/http_client/` 下的 React 前端。
+- `src/http_client/webview/ui/*` 已清理（目录保留但无遗留文件）。
 
 ## 3. 构建与开发命令
 
@@ -130,10 +130,10 @@ pnpm install
 已存在的测试覆盖至少包括:
 
 - `panel.test.ts`
-- `sidebar_view.test.ts`
+- `register.test.ts`
 - `react_loader.test.ts`
 - `store.test.ts`
-- `webview_state.test.ts`
+- `sort_id.test.ts`
 - `runner.test.ts`
 - `resolver.test.ts`
 - `curl_import.test.ts`

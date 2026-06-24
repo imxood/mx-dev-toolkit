@@ -31,11 +31,12 @@
 - `pnpm watch:webview` 监听并增量构建 React Webview。
 - `pnpm watch:extension` 监听并增量构建扩展宿主。
 - `pnpm lint` 对 `src/` 与 `webviews/http_client/` 运行 ESLint。
-- `pnpm test:http-client:core` 运行 `src/http_client/tests/*`。
-- `pnpm test:http-client:webview` 运行 `webviews/http_client/tests/*`。
+- `pnpm test:http-client:core` 运行 `src/http_client/tests/*` (panel, store, runner, resolver, load_runner, curl_import, react_loader, register, sort_id)。
+- `pnpm test:http-client:webview` 运行 `webviews/http_client/tests/*` (workbench_model, sidebar_model, component_contract)。
 - `pnpm test:http-client` 聚合 HTTP Client 核心与 Webview 测试。
 - `pnpm test:toast` 运行 `src/toast/tests/service.test.ts`。
-- `pnpm test` 运行 HTTP Client + Toast 全量测试。
+- `pnpm test:selection` 运行 `src/selection/tests/path_format.test.ts`。
+- `pnpm test` 运行 HTTP Client + Selection + Toast 全量测试。
 - `pnpm vscode:prepublish` 发布前完整编译。
 - 可选（Rust 工具）：`cd eh_keil_tool; cargo build`。
 

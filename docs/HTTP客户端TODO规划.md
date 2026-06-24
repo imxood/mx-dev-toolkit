@@ -1,6 +1,6 @@
 # HTTP 客户端增量 TODO 规划
 
-最后更新: 2026-04-16
+最后更新: 2026-06-24
 状态: 增量 TODO
 
 ## 1. 文档定位
@@ -87,16 +87,14 @@
 
 ### T3. 旧 Webview 目录治理
 
-背景:
+状态: ✅ 已完成
 
-- `src/http_client/webview/state.ts` 与 `src/http_client/webview/ui/*` 仍存在
-- 当前主运行路径已切到 React
+`src/http_client/webview/state.ts` 与 `src/http_client/webview/ui/*` 已清理。`sidebar_view.ts` 已删除。
 
-待办:
+保留文件:
 
-- 梳理这些旧文件是否仍承担兼容、测试辅助或纯历史遗留职责
-- 如果已经不再参与主路径, 逐步收敛或迁移到更清晰的归档/兼容位置
-- 在删除前补齐必要测试, 避免误删隐式依赖
+- `index.ts` / `react_html.ts`: 宿主 HTML 装载
+- `styles.ts`: 内联样式 fallback (不在主路径使用)
 
 ### T4. React Webview 验收面补强
 
